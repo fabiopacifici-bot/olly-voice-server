@@ -1,5 +1,6 @@
 from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.responses import FileResponse, StreamingResponse
+from starlette.background import BackgroundTask
 import os
 from pathlib import Path
 import asyncio
@@ -33,39 +34,40 @@ async def load_whisper():
         _whisper = "whisper-loaded"
     return _whisper
 
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
 @app.post("/tts")
 async def tts(text: str = Form(...)):
     await load_cosy()
     # Use a per-request temporary file to avoid concurrent-writes to a fixed path
     fd, path = tempfile.mkstemp(suffix=".wav", dir=str(ASSETS))
     os.close(fd)
-    try:
-        # Create a 1-second silent wav as placeholder
-        import wave
-        import struct
-        framerate = 16000
-        duration = 1
-        nframes = duration * framerate
-        with wave.open(path, 'w') as wf:
-            wf.setnchannels(1)
-            wf.setsampwidth(2)
-            wf.setframerate(framerate)
-            for i in range(nframes):
-                wf.writeframes(struct.pack('<h', 0))
-        # Stream file back to client and remove after streaming
-        def iterfile(p):
-            with open(p, 'rb') as fh:
-                while True:
-                    chunk = fh.read(8192)
-                    if not chunk:
-                        break
-                    yield chunk
-        return StreamingResponse(iterfile(path), media_type='audio/wav')
-    finally:
-        try:
-            os.remove(path)
-        except Exception:
-            pass
+    # Create a 1-second silent wav as placeholder
+    import wave
+    import struct
+    framerate = 16000
+    duration = 1
+    nframes = duration * framerate
+    with wave.open(path, 'w') as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(framerate)
+        for i in range(nframes):
+            wf.writeframes(struct.pack('<h', 0))
+    # Stream file back to client and remove after streaming using BackgroundTask
+    def iterfile(p):
+        with open(p, 'rb') as fh:
+            while True:
+                chunk = fh.read(8192)
+                if not chunk:
+                    break
+                yield chunk
+    return StreamingResponse(
+        iterfile(path), media_type='audio/wav',
+        background=BackgroundTask(os.remove, path)
+    )
 
 @app.post("/transcribe")
 async def transcribe(file: UploadFile = File(...)):
