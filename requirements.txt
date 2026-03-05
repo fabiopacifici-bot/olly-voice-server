@@ -5,3 +5,7 @@ httpx
 python-multipart
 
 inflect
+qwen-tts
+soundfile
+numpy
+piper-tts

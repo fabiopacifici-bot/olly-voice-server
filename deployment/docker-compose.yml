@@ -1,0 +1,33 @@
+version: "3.9"
+
+services:
+  olly-voice:
+    build:
+      context: ..
+      dockerfile: deployment/Dockerfile
+    ports:
+      - "8766:8766"
+    environment:
+      - LLM_URL=${LLM_URL:-http://host.docker.internal:8005}
+      - LLM_MODEL=${LLM_MODEL:-Qwen/Qwen3.5-9B}
+      - QWEN_TTS_MODEL=/models/qwen3-tts-customvoice
+      - QWEN_TTS_SPEAKER=${QWEN_TTS_SPEAKER:-Vivian}
+      - QWEN_TTS_INSTRUCT=${QWEN_TTS_INSTRUCT:-Speak clearly and naturally}
+      - WHISPER_MODEL=${WHISPER_MODEL:-base.en}
+      - WHISPER_DEVICE=${WHISPER_DEVICE:-cuda}
+    volumes:
+      - ../pretrained_models:/app/pretrained_models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+    networks:
+      - olly-net
+
+networks:
+  olly-net:
+    driver: bridge

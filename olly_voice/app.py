@@ -28,11 +28,15 @@ ASSETS.mkdir(parents=True, exist_ok=True)
 
 # Config via env
 LLM_URL = os.environ.get('LLM_URL', 'http://localhost:8005')
-LLM_MODEL = os.environ.get('LLM_MODEL', 'Qwen/Qwen3-0.6B')
+LLM_MODEL = os.environ.get('LLM_MODEL', 'Qwen/Qwen3.5-9B')
 WHISPER_MODEL = os.environ.get('WHISPER_MODEL', 'base.en')
 WHISPER_DEVICE = os.environ.get('WHISPER_DEVICE', 'cuda')
 # Piper-only TTS (no CosyVoice speaker env)
 PIPER_MODEL = os.environ.get('PIPER_MODEL', str(BASE / 'pretrained_models' / 'piper' / 'en_US-amy-medium.onnx'))
+# Qwen3-TTS config
+QWEN_TTS_MODEL = os.environ.get('QWEN_TTS_MODEL', 'pretrained_models/qwen3-tts-customvoice')
+QWEN_TTS_SPEAKER = os.environ.get('QWEN_TTS_SPEAKER', 'Vivian')
+QWEN_TTS_INSTRUCT = os.environ.get('QWEN_TTS_INSTRUCT', 'Speak clearly and naturally')
 
 # In-memory conversation store: session_id -> list of {'role': 'user'|'assistant'|'system', 'content': '...'}
 _conversations = {}
@@ -44,6 +48,7 @@ _cosy = None
 _whisper = None
 _tts_available = False
 _whisper_load_attempted = False
+_cosy_load_attempted = False
 
 # --- Whisper loader ---
 def load_whisper():
@@ -66,7 +71,53 @@ def load_whisper():
 # --- Piper TTS loader ---
 
 def load_cosy():
-    global _cosy, _tts_available
+    global _cosy, _tts_available, _cosy_load_attempted
+    if _cosy_load_attempted:
+        return _cosy
+    _cosy_load_attempted = True
+
+    # --- Attempt 1: Qwen3-TTS ---
+    try:
+        import torch
+        import soundfile as sf
+        import numpy as np
+        from qwen_tts import Qwen3TTSModel
+        device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
+        dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
+        model = Qwen3TTSModel.from_pretrained(
+            QWEN_TTS_MODEL,
+            device_map=device,
+            dtype=dtype,
+        )
+        def inference_sft(text, **kwargs):
+            import io, wave as wv
+            wavs, sr = model.generate_custom_voice(
+                text=text,
+                language='English',
+                speaker=QWEN_TTS_SPEAKER,
+                instruct=QWEN_TTS_INSTRUCT,
+            )
+            audio = wavs[0]
+            if hasattr(audio, 'numpy'):
+                audio = audio.numpy()
+            # Normalize to int16
+            if audio.dtype != np.int16:
+                audio = (audio * 32767).clip(-32768, 32767).astype(np.int16)
+            buf = io.BytesIO()
+            with wv.open(buf, 'wb') as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(sr)
+                wf.writeframes(audio.tobytes())
+            return buf.getvalue()
+        _cosy = {'inference_sft': inference_sft}
+        _tts_available = True
+        print(f"Qwen3-TTS loaded: {QWEN_TTS_MODEL}, speaker={QWEN_TTS_SPEAKER}")
+        return _cosy
+    except Exception as e:
+        print(f"Qwen3-TTS load failed ({e}), falling back to Piper")
+
+    # --- Fallback: Piper ---
     try:
         from piper import PiperVoice
         import wave, io
@@ -81,7 +132,7 @@ def load_cosy():
         print(f"Piper TTS loaded: {PIPER_MODEL}")
         return _cosy
     except Exception as e:
-        print("Piper TTS load failed:", e)
+        print(f"Piper TTS load failed: {e}")
         _cosy = None
         _tts_available = False
         return None
@@ -104,7 +155,15 @@ async def health():
     status = {'status': 'ok'}
     # report whisper/tts availability based on already-loaded globals
     status['whisper'] = 'ok' if _whisper is not None else 'missing'
-    status['tts'] = 'piper' if _tts_available else 'stub'
+    if _tts_available and _cosy:
+        # detect which TTS is loaded
+        try:
+            from qwen_tts import Qwen3TTSModel
+            status['tts'] = 'qwen3-tts'
+        except ImportError:
+            status['tts'] = 'piper'
+    else:
+        status['tts'] = 'stub'
     # check LLM
     try:
         async with httpx.AsyncClient(timeout=1.0) as c:
