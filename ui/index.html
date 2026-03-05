@@ -3,107 +3,101 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Olly — Local Voice Assistant</title>
+<title>Olly 🎙</title>
 <style>
-:root{--bg:#0b0f14;--card:#0e1620;--muted:#9aa6b2;--accent:#7dd3fc}
+:root{--bg:#0b0f14;--panel:#0e1620;--muted:#9aa6b2;--accent:#2196f3;--user:#0b64c7;--olly:#1f2933;--error:#ff6b6b}
 *{box-sizing:border-box}
-body{margin:0;font-family:Inter,UI-sans-serif,system-ui,Segoe UI,Roboto,'Helvetica Neue',Arial;background:var(--bg);color:#e6eef6}
-.container{max-width:900px;margin:24px auto;padding:20px}
-.header{display:flex;align-items:center;gap:12px}
-.brand{font-weight:700;font-size:20px}
-.card{background:linear-gradient(180deg,rgba(255,255,255,0.02),transparent);border:1px solid rgba(255,255,255,0.03);padding:16px;border-radius:10px;margin-top:16px}
-.controls{display:flex;align-items:center;gap:12px}
-#micBtn{width:72px;height:72px;border-radius:50%;background:linear-gradient(180deg,var(--accent),#2aa9d6);border:none;color:#042029;font-weight:700;font-size:18px;display:flex;align-items:center;justify-content:center;cursor:pointer}
-.status{font-size:14px;color:var(--muted)}
-.transcript{margin-top:12px;max-height:360px;overflow:auto}
-.turn{padding:8px;border-radius:8px;margin-bottom:8px}
-.user{background:rgba(125,211,252,0.06);border:1px solid rgba(125,211,252,0.06);color:var(--accent)}
-.assistant{background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.03)}
-.small{font-size:13px;color:var(--muted)}
-.error{color:#ff6b6b}
-.footer{margin-top:12px;font-size:13px;color:var(--muted)}
+body{margin:0;font-family:Inter,system-ui,Segoe UI,Roboto,Arial;background:var(--bg);color:#e6eef6}
+.app{max-width:760px;margin:18px auto;padding:12px}
+.header{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.brand{display:flex;align-items:center;gap:10px}
+.title{font-weight:700;font-size:20px}
+.badge{font-size:12px;padding:6px 8px;border-radius:999px;background:#0b1220;color:var(--muted);border:1px solid rgba(255,255,255,0.02)}
+.card{background:linear-gradient(180deg,rgba(255,255,255,0.02),transparent);border:1px solid rgba(255,255,255,0.03);padding:16px;border-radius:12px;margin-top:12px}
+.thread{height:60vh;overflow:auto;padding:12px;display:flex;flex-direction:column-reverse;gap:8px}
+.bubble{max-width:80%;padding:10px;border-radius:12px;box-shadow:0 1px 0 rgba(0,0,0,0.3);}
+.user{align-self:flex-end;background:linear-gradient(180deg,#08386b,#0b64c7);color:white;border-bottom-right-radius:4px}
+.olly{align-self:flex-start;background:var(--olly);color:#e6eef6;border-bottom-left-radius:4px;display:flex;gap:8px;align-items:center}
+.meta{font-size:11px;color:var(--muted);margin-top:6px}
+.controls{display:flex;flex-direction:column;align-items:center;gap:8px;margin-top:12px}
+#micBtn{width:120px;height:120px;border-radius:999px;background:linear-gradient(180deg,var(--accent),#0b7dd9);border:none;color:white;font-size:40px;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 6px 24px rgba(0,0,0,0.6)}
+#micBtn.recording{animation: pulse 1s infinite; background:linear-gradient(180deg,#ff4d4d,#ff2b2b)}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(255,77,77,0.6)}50%{box-shadow:0 0 0 18px rgba(255,77,77,0)}100%{box-shadow:0 0 0 0 rgba(255,77,77,0.0)}}
+.hint{font-size:13px;color:var(--muted)}
+.topbar{display:flex;align-items:center;gap:8px}
+.btn{background:transparent;border:1px solid rgba(255,255,255,0.04);color:var(--muted);padding:8px 10px;border-radius:8px;cursor:pointer}
+.smallSpeaker{width:18px;height:18px;border-radius:4px;background:#2b3740;display:inline-block;margin-right:6px}
+.errorBubble{background:linear-gradient(180deg,#3a0b0b,#5c1111);color:white;border:1px solid rgba(255,0,0,0.2)}
+@media (max-width:600px){.card{padding:12px}.thread{height:55vh}.title{font-size:18px}#micBtn{width:96px;height:96px;font-size:30px}}
 </style>
 </head>
 <body>
-<div class="container">
+<div class="app">
   <div class="header">
-    <div class="brand">Olly — Local Voice Assistant</div>
-    <div class="status small" id="status">Ready</div>
+    <div class="brand"><div class="title">Olly 🎙</div><div class="badge" id="status">Ready</div></div>
+    <div class="topbar">
+      <button class="btn" id="newConv">New conversation</button>
+    </div>
   </div>
 
   <div class="card">
+    <div class="thread" id="thread" aria-live="polite"></div>
     <div class="controls">
-      <button id="micBtn" title="Hold Space or click+hold">🔊</button>
-      <div>
-        <div class="small">Hold to speak</div>
-        <div class="small">Spacebar also works</div>
-      </div>
+      <button id="micBtn" title="Hold Space or click+hold">🎤</button>
+      <div class="hint">Hold SPACE to talk</div>
     </div>
-
-    <div class="transcript" id="transcript" aria-live="polite"></div>
-    <div class="footer">No external services. Transcription → LLM → TTS all local.</div>
   </div>
 </div>
 
 <script>
+const sessionId = 'default';
 const micBtn = document.getElementById('micBtn');
 const statusEl = document.getElementById('status');
-const transcriptEl = document.getElementById('transcript');
-let mediaStream = null, mediaRecorder = null, chunks = [];
-let audioCtx = null;
+const thread = document.getElementById('thread');
+const newConvBtn = document.getElementById('newConv');
+let mediaStream=null, mediaRecorder=null, chunks=[], audioCtx=null;
+let processing=false, spaceDown=false, recordTimeout=null;
 
-function setStatus(s, cls){ statusEl.textContent = s; statusEl.className = 'status small ' + (cls||''); }
+function setStatus(s){ statusEl.textContent = s }
 
-async function startListening(){
+async function fetchHealth(){
   try{
-    setStatus('Listening');
-    if(!mediaStream) mediaStream = await navigator.mediaDevices.getUserMedia({audio:true});
-    mediaRecorder = new MediaRecorder(mediaStream);
-    chunks = [];
-    mediaRecorder.ondataavailable = e=>chunks.push(e.data);
-    mediaRecorder.start();
-  }catch(e){
-    setStatus('Error getting mic', 'error');
-  }
+    const r = await fetch('/health');
+    if(!r.ok) throw new Error('health failed');
+    const j = await r.json();
+    setStatus((j.llm||'') + ' / ' + (j.whisper||'') + ' / ' + (j.tts||''))
+  }catch(e){ setStatus('Error') }
 }
 
-function stopListeningAndSend(){
-  if(!mediaRecorder) return;
-  setStatus('Transcribing');
-  mediaRecorder.onstop = async ()=>{
-    const blob = new Blob(chunks, {type: 'audio/webm'});
-    chunks = [];
-    try{
-      const fd = new FormData(); fd.append('file', blob, 'rec.webm');
-      const r = await fetch('/transcribe', {method:'POST', body: fd});
-      if(!r.ok) throw new Error('Transcribe failed');
-      const jr = await r.json();
-      addTurn('user', jr.text || '');
-      setStatus('Thinking');
-      // call /chat
-      const cr = await fetch('/chat', {method:'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({text: jr.text||''})});
-      if(!cr.ok){ const txt = await cr.text(); throw new Error('Chat failed: '+txt); }
-      // read assistant reply header if present
-      const replyHeader = cr.headers.get('X-Assistant-Reply');
-      const audioBuf = await cr.arrayBuffer();
-      const replyText = replyHeader || '';
-      addTurn('assistant', replyText);
-      setStatus('Speaking');
-      await playAudioBuffer(audioBuf);
-      setStatus('Ready');
-    }catch(err){
-      console.error(err);
-      setStatus('Error: '+err.message, 'error');
-    }
-  };
-  mediaRecorder.stop();
-}
-
-function addTurn(role, text){
+function makeBubble(role, text, time, audioUrl, isError){
   const el = document.createElement('div');
-  el.className = 'turn ' + (role==='user'? 'user':'assistant');
-  el.innerHTML = '<div class="small">'+(role==='user'?'You':'Olly')+'</div><div>'+ (text||'<i>(no text)</i>') +'</div>';
-  transcriptEl.prepend(el);
+  el.className = 'bubble ' + (isError? 'errorBubble ' : (role==='user'? 'user':'olly'));
+  const meta = document.createElement('div'); meta.className='meta'; meta.textContent = (role==='user'? 'You' : 'Olly') + ' · ' + new Date(time).toLocaleTimeString();
+  const content = document.createElement('div'); content.innerHTML = text || '<i>(no text)</i>';
+  el.appendChild(content);
+  if(role==='assistant' || role==='olly'){
+    const row = document.createElement('div'); row.style.display='flex'; row.style.alignItems='center';
+    if(audioUrl){
+      const speaker = document.createElement('button'); speaker.className='btn'; speaker.style.marginRight='8px'; speaker.textContent='🔊';
+      speaker.onclick = async ()=>{ try{ await playUrl(audioUrl) }catch(e){ console.warn(e) } }
+      row.appendChild(speaker);
+    }
+    el.appendChild(row);
+  }
+  el.appendChild(meta);
+  return el;
+}
+
+function prependBubble(el){ thread.prepend(el); }
+
+async function playUrl(url){
+  setStatus('Speaking');
+  try{
+    const r = await fetch(url);
+    const buf = await r.arrayBuffer();
+    await playAudioBuffer(buf);
+  }catch(e){ console.warn(e) }
+  setStatus('Ready');
 }
 
 async function playAudioBuffer(arrayBuffer){
@@ -113,20 +107,92 @@ async function playAudioBuffer(arrayBuffer){
     const src = audioCtx.createBufferSource();
     src.buffer = buf; src.connect(audioCtx.destination);
     src.start();
-    // wait for end
     await new Promise(res=> src.onended = res);
   }catch(e){ console.warn('Playback failed', e); }
 }
 
+async function startRecording(){
+  if(processing) return;
+  setStatus('Listening');
+  micBtn.classList.add('recording');
+  try{
+    if(!mediaStream) mediaStream = await navigator.mediaDevices.getUserMedia({audio:true});
+    mediaRecorder = new MediaRecorder(mediaStream);
+    chunks = [];
+    mediaRecorder.ondataavailable = e=>chunks.push(e.data);
+    mediaRecorder.start();
+    // auto-stop at 30s
+    recordTimeout = setTimeout(()=> stopRecording(true), 30000);
+  }catch(e){ setStatus('Error'); micBtn.classList.remove('recording'); }
+}
+
+async function stopRecording(auto=false){
+  if(!mediaRecorder) return;
+  clearTimeout(recordTimeout);
+  micBtn.classList.remove('recording');
+  setStatus('Transcribing');
+  mediaRecorder.onstop = async ()=>{
+    const blob = new Blob(chunks, {type:'audio/webm'}); chunks=[];
+    processing=true;
+    try{
+      const fd = new FormData(); fd.append('file', blob, 'rec.webm');
+      const r = await fetch('/transcribe', {method:'POST', body: fd});
+      if(!r.ok) throw new Error('Transcribe failed');
+      const jr = await r.json();
+      addMessage('user', jr.text || '', null, false);
+      setStatus('Thinking');
+      // call /chat with session_id
+      const cr = await fetch('/chat', {method:'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({text: jr.text||'', session_id: sessionId})});
+      if(!cr.ok){ const txt = await cr.text(); throw new Error('Chat failed: '+txt); }
+      const replyHeader = cr.headers.get('X-Assistant-Reply') || '';
+      const sess = cr.headers.get('X-Session-Id') || sessionId;
+      const audioBuf = await cr.arrayBuffer();
+      addMessage('assistant', replyHeader, audioBuf, false);
+      // play audio but re-enable mic immediately when audio starts
+      setStatus('Speaking');
+      // create object URL for playback
+      const blob2 = new Blob([audioBuf], {type:'audio/wav'});
+      const url = URL.createObjectURL(blob2);
+      const audio = new Audio(url);
+      audio.play();
+      audio.onplaying = ()=>{ processing=false; setStatus('Ready'); }
+      audio.onended = ()=>{ URL.revokeObjectURL(url); }
+    }catch(err){
+      console.error(err);
+      addMessage('assistant', err.message || 'Error', null, true);
+      setStatus('Error');
+      processing=false;
+    }
+  };
+  mediaRecorder.stop();
+}
+
+function addMessage(role, text, audioBuf, isError){
+  const time = Date.now();
+  if(audioBuf){
+    const blob = new Blob([audioBuf], {type:'audio/wav'});
+    const url = URL.createObjectURL(blob);
+    const el = makeBubble(role==='assistant'?'olly':role, text, time, url, isError);
+    prependBubble(el);
+  }else{
+    const el = makeBubble(role==='assistant'?'olly':role, text, time, null, isError);
+    prependBubble(el);
+  }
+}
+
 // UI bindings
-micBtn.addEventListener('pointerdown', ()=>{ micBtn.classList.add('active'); startListening(); });
-micBtn.addEventListener('pointerup', ()=>{ micBtn.classList.remove('active'); stopListeningAndSend(); });
+micBtn.addEventListener('pointerdown', (e)=>{ e.preventDefault(); startRecording(); });
+micBtn.addEventListener('pointerup', (e)=>{ e.preventDefault(); stopRecording(); });
 
-// spacebar support
-let spaceDown = false;
-window.addEventListener('keydown', (e)=>{ if(e.code==='Space' && !spaceDown){ e.preventDefault(); spaceDown=true; micBtn.classList.add('active'); startListening(); } });
-window.addEventListener('keyup', (e)=>{ if(e.code==='Space'){ spaceDown=false; micBtn.classList.remove('active'); stopListeningAndSend(); } });
+window.addEventListener('keydown', (e)=>{ if(e.code==='Space' && !spaceDown){ e.preventDefault(); spaceDown=true; startRecording(); } });
+window.addEventListener('keyup', (e)=>{ if(e.code==='Space'){ spaceDown=false; stopRecording(); } });
 
+newConvBtn.addEventListener('click', async ()=>{
+  try{ setStatus('Clearing'); await fetch('/history/'+sessionId, {method:'DELETE'}); thread.innerHTML=''; setStatus('Ready'); }catch(e){ setStatus('Error'); }
+});
+
+// On load
+fetchHealth();
 </script>
 </body>
 </html>

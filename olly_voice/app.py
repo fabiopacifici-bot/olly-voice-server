@@ -21,10 +21,17 @@ WHISPER_MODEL = os.environ.get('WHISPER_MODEL', 'base.en')
 WHISPER_DEVICE = os.environ.get('WHISPER_DEVICE', 'cuda')
 TTS_SPEAKER = os.environ.get('TTS_SPEAKER', 'default')
 
+# In-memory conversation store: session_id -> list of {'role': 'user'|'assistant'|'system', 'content': '...'}
+_conversations = {}
+_MAX_TURNS = 20
+_DEFAULT_SYSTEM_PROMPT = "You are Olly, a helpful and concise voice assistant. Keep your answers short and conversational — 1-3 sentences max. No bullet lists, no markdown, just natural speech."
+
 # Lazy-loaded globals
 _cosy = None
 _whisper = None
 _tts_available = False
+_cosy_load_attempted = False
+_whisper_load_attempted = False
 
 # Attempt a startup check for LLM (warn only)
 try:
@@ -35,7 +42,10 @@ except Exception:
 
 # --- Whisper loader ---
 def load_whisper():
-    global _whisper
+    global _whisper, _whisper_load_attempted
+    if _whisper_load_attempted:
+        return _whisper
+    _whisper_load_attempted = True
     if _whisper is not None:
         return _whisper
     try:
@@ -50,7 +60,10 @@ def load_whisper():
 
 # --- Cosy/TTS loader ---
 def load_cosy():
-    global _cosy, _tts_available
+    global _cosy, _tts_available, _cosy_load_attempted
+    if _cosy_load_attempted:
+        return _cosy  # don't retry — cache both success and failure
+    _cosy_load_attempted = True
     if _cosy is not None:
         return _cosy
     try:
@@ -115,6 +128,27 @@ def make_silent_wav(path, duration_s=1, rate=16000):
         for _ in range(nframes):
             wf.writeframes(struct.pack('<h', 0))
 
+# Conversation history helpers
+def _get_history(session_id: str):
+    return _conversations.get(session_id, [])
+
+def _append_turn(session_id: str, role: str, content: str):
+    hist = _conversations.setdefault(session_id, [])
+    hist.append({'role': role, 'content': content})
+    # Keep only last _MAX_TURNS * 2 messages (user+assistant counted as 1 turn each)
+    if len(hist) > _MAX_TURNS * 2:
+        # drop oldest
+        _conversations[session_id] = hist[-(_MAX_TURNS*2):]
+
+@app.get('/history/{session_id}')
+async def get_history(session_id: str):
+    return JSONResponse({'session_id': session_id, 'history': _get_history(session_id)})
+
+@app.delete('/history/{session_id}')
+async def delete_history(session_id: str):
+    _conversations.pop(session_id, None)
+    return JSONResponse({'status': 'cleared', 'session_id': session_id})
+
 # /tts endpoint: accepts form text and returns wav stream
 @app.post('/tts')
 async def tts(text: str = Form(...)):
@@ -135,7 +169,7 @@ async def tts(text: str = Form(...)):
                     f.write(wav_bytes)
             elif isinstance(wav_bytes, str) and os.path.exists(wav_bytes):
                 # copy file
-                with open(wav_bytes, 'rb') as src, open(path, 'wb') as dst:
+                with open(wav_bytes,'rb') as src, open(path,'wb') as dst:
                     dst.write(src.read())
             else:
                 # fallback
@@ -181,28 +215,46 @@ async def transcribe(file: UploadFile = File(...)):
         except Exception:
             pass
 
-# /chat: accept JSON {text:...} → call LLM → TTS → return wav
+# /chat: accept JSON {text:..., session_id:..., system_prompt:...} → call LLM → TTS → return wav + headers
 @app.post('/chat')
 async def chat(body: dict):
-    user_text = body.get('text') if isinstance(body, dict) else None
+    import time as _time
+    _t0 = _time.time()
+    if not isinstance(body, dict):
+        return JSONResponse({'error': 'invalid body'}, status_code=400)
+    user_text = body.get('text')
+    session_id = body.get('session_id', 'default')
+    system_prompt = body.get('system_prompt') or _DEFAULT_SYSTEM_PROMPT
     if not user_text:
         return JSONResponse({'error': 'missing text'}, status_code=400)
+    # Append user turn
+    _append_turn(session_id, 'user', user_text)
+    # Prepare messages for LLM: system prompt + history
+    history = _get_history(session_id)
+    messages = [{'role': 'system', 'content': system_prompt}]
+    for m in history:
+        messages.append({'role': m['role'], 'content': m['content']})
     # Call LLM
-    payload = {'messages': [{'role':'user','content': user_text}], 'model': LLM_MODEL}
+    payload = {'messages': messages, 'model': LLM_MODEL}
     try:
         async with httpx.AsyncClient(timeout=30.0) as c:
             r = await c.post(f"{LLM_URL}/chat", json=payload)
             r.raise_for_status()
             jr = r.json()
-            # Support multiple response shapes
+            print(f"[TIMING] LLM: {(_time.time()-_t0)*1000:.0f}ms")
             if isinstance(jr, dict) and 'choices' in jr:
                 reply = jr['choices'][0].get('message', {}).get('content') or jr['choices'][0].get('content') or ''
+            elif isinstance(jr, dict) and 'message' in jr:
+                msg = jr['message']
+                reply = msg.get('content', '') if isinstance(msg, dict) else str(msg)
             else:
-                reply = jr.get('text') if isinstance(jr, dict) else str(jr)
+                reply = jr.get('text', '') if isinstance(jr, dict) else str(jr)
     except Exception as e:
         return JSONResponse({'error': f'LLM call failed: {e}'}, status_code=502)
+    _t1 = _time.time()
+    # Append assistant reply to history
+    _append_turn(session_id, 'assistant', reply)
     # Synthesize via TTS
-    # Reuse tts() implementation by calling internal function
     tmpdir = tempfile.gettempdir()
     fd, path = tempfile.mkstemp(suffix='.wav', dir=tmpdir)
     os.close(fd)
@@ -222,6 +274,7 @@ async def chat(body: dict):
                 make_silent_wav(path)
         else:
             make_silent_wav(path)
+        print(f"[TIMING] TTS/WAV: {(_time.time()-_t1)*1000:.0f}ms")
         def iterfile(p):
             with open(p,'rb') as fh:
                 while True:
@@ -229,7 +282,9 @@ async def chat(body: dict):
                     if not chunk:
                         break
                     yield chunk
-        headers = {'X-Assistant-Reply': reply}
+        # Sanitize reply for HTTP header (strip newlines/non-ASCII)
+        safe_reply = reply.replace('\n', ' ').replace('\r', '').encode('ascii', 'ignore').decode('ascii')[:500]
+        headers = {'X-Assistant-Reply': safe_reply, 'X-Session-Id': session_id}
         return StreamingResponse(iterfile(path), media_type='audio/wav', background=BackgroundTask(os.remove, path), headers=headers)
     except Exception as e:
         try:
