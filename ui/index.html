@@ -27,7 +27,10 @@ body{margin:0;font-family:Inter,system-ui,Segoe UI,Roboto,Arial;background:var(-
 .topbar{display:flex;align-items:center;gap:8px}
 .btn{background:transparent;border:1px solid rgba(255,255,255,0.04);color:var(--muted);padding:8px 10px;border-radius:8px;cursor:pointer}
 .smallSpeaker{width:18px;height:18px;border-radius:4px;background:#2b3740;display:inline-block;margin-right:6px}
-.errorBubble{background:linear-gradient(180deg,#3a0b0b,#5c1111);color:white;border:1px solid rgba(255,0,0,0.2)}
+.thinking{margin-top:8px;font-size:12px;color:var(--muted)}
+.thinking summary{cursor:pointer;color:#4a7fa5;user-select:none}
+.thinking summary:hover{color:var(--accent)}
+.thinking pre{white-space:pre-wrap;word-break:break-word;background:rgba(0,0,0,0.3);padding:8px;border-radius:6px;margin:4px 0 0;max-height:200px;overflow:auto;font-family:inherit}
 @media (max-width:600px){.card{padding:12px}.thread{height:55vh}.title{font-size:18px}#micBtn{width:96px;height:96px;font-size:30px}}
 </style>
 </head>
@@ -69,12 +72,20 @@ async function fetchHealth(){
   }catch(e){ setStatus('Error') }
 }
 
-function makeBubble(role, text, time, audioUrl, isError){
+function makeBubble(role, text, time, audioUrl, isError, thinking){
   const el = document.createElement('div');
   el.className = 'bubble ' + (isError? 'errorBubble ' : (role==='user'? 'user':'olly'));
   const meta = document.createElement('div'); meta.className='meta'; meta.textContent = (role==='user'? 'You' : 'Olly') + ' · ' + new Date(time).toLocaleTimeString();
   const content = document.createElement('div'); content.innerHTML = text || '<i>(no text)</i>';
   el.appendChild(content);
+  if((role==='assistant' || role==='olly') && thinking){
+    const details = document.createElement('details');
+    details.className='thinking';
+    const summary = document.createElement('summary'); summary.textContent='🧠 Thinking…';
+    const pre = document.createElement('pre'); pre.textContent=thinking;
+    details.appendChild(summary); details.appendChild(pre);
+    el.appendChild(details);
+  }
   if(role==='assistant' || role==='olly'){
     const row = document.createElement('div'); row.style.display='flex'; row.style.alignItems='center';
     if(audioUrl){
@@ -145,9 +156,10 @@ async function stopRecording(auto=false){
       const cr = await fetch('/chat', {method:'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({text: jr.text||'', session_id: sessionId})});
       if(!cr.ok){ const txt = await cr.text(); throw new Error('Chat failed: '+txt); }
       const replyHeader = cr.headers.get('X-Assistant-Reply') || '';
+      const thinkingHeader = cr.headers.get('X-Thinking') || '';
       const sess = cr.headers.get('X-Session-Id') || sessionId;
       const audioBuf = await cr.arrayBuffer();
-      addMessage('assistant', replyHeader, audioBuf, false);
+      addMessage('assistant', replyHeader, audioBuf, false, thinkingHeader);
       // play audio but re-enable mic immediately when audio starts
       setStatus('Speaking');
       // create object URL for playback
@@ -167,15 +179,15 @@ async function stopRecording(auto=false){
   mediaRecorder.stop();
 }
 
-function addMessage(role, text, audioBuf, isError){
+function addMessage(role, text, audioBuf, isError, thinking=''){
   const time = Date.now();
   if(audioBuf){
     const blob = new Blob([audioBuf], {type:'audio/wav'});
     const url = URL.createObjectURL(blob);
-    const el = makeBubble(role==='assistant'?'olly':role, text, time, url, isError);
+    const el = makeBubble(role==='assistant'?'olly':role, text, time, url, isError, thinking);
     prependBubble(el);
   }else{
-    const el = makeBubble(role==='assistant'?'olly':role, text, time, null, isError);
+    const el = makeBubble(role==='assistant'?'olly':role, text, time, null, isError, thinking);
     prependBubble(el);
   }
 }

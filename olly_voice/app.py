@@ -224,30 +224,60 @@ async def chat(body: dict):
     for m in history:
         messages.append({'role': m['role'], 'content': m['content']})
     # Call LLM
-    payload = {'messages': messages, 'model': LLM_MODEL, 'max_tokens': 200}
+    payload = {'messages': messages, 'model': LLM_MODEL, 'max_tokens': 300, 'stop': ['\nUser:', '\nuser:', '\nAssistant:', '\nassistant:']}
     try:
-        async with httpx.AsyncClient(timeout=30.0) as c:
+        async with httpx.AsyncClient(timeout=60.0) as c:
             r = await c.post(f"{LLM_URL}/chat", json=payload)
             r.raise_for_status()
             jr = r.json()
             print(f"[TIMING] LLM: {(_time.time()-_t0)*1000:.0f}ms")
             if isinstance(jr, dict) and 'choices' in jr:
-                reply = jr['choices'][0].get('message', {}).get('content') or jr['choices'][0].get('content') or ''
+                raw_reply = jr['choices'][0].get('message', {}).get('content') or jr['choices'][0].get('content') or ''
             elif isinstance(jr, dict) and 'message' in jr:
                 msg = jr['message']
-                reply = msg.get('content', '') if isinstance(msg, dict) else str(msg)
+                raw_reply = msg.get('content', '') if isinstance(msg, dict) else str(msg)
             else:
-                reply = jr.get('text', '') if isinstance(jr, dict) else str(jr)
+                raw_reply = jr.get('text', '') if isinstance(jr, dict) else str(jr)
     except Exception as e:
         return JSONResponse({'error': f'LLM call failed: {e}'}, status_code=502)
     _t1 = _time.time()
-    # Strip Qwen3 <think>...</think> reasoning blocks before TTS
     import re
-    reply = re.sub(r'<think>.*?</think>', '', reply, flags=re.DOTALL).strip()
-    # Truncate at first "User:" continuation hallucination
+    # Extract thinking block separately (for UI display, not TTS)
+    think_match = re.search(r'<think>(.*?)</think>', raw_reply, flags=re.DOTALL)
+    thinking_text = think_match.group(1).strip() if think_match else ''
+    # If no formal <think> tag, save the raw full reply as thinking so UI can show it
+    if not thinking_text and raw_reply != raw_reply[:200]:
+        thinking_text = raw_reply
+    # Clean reply for TTS: strip <think> blocks and hallucination continuations
+    tts_reply = re.sub(r'<think>.*?</think>', '', raw_reply, flags=re.DOTALL).strip()
+    # Strip inline reasoning that Qwen3-0.6B outputs without <think> tags
+    # Pattern: "Answer. Okay, the user is asking..." or "Answer. I need to..."
+    inline_reasoning_patterns = [
+        r'\s+(Okay,?\s+the\s+(user|system)|I need to|I should|Let me|The user is asking|Since it\'s|Wait,|Actually,|Hmm,|The system)',
+        r'\s+\*\*Final Answer\*\*.*',
+        r'\s+```.*',
+        r'\s+The user then says.*',
+        r'\s+Answer:.*',
+    ]
+    for pat in inline_reasoning_patterns:
+        m = re.search(pat, tts_reply, flags=re.IGNORECASE | re.DOTALL)
+        if m:
+            tts_reply = tts_reply[:m.start()].strip()
     for stop in ['\nUser:', '\nuser:', '\nAssistant:', '\nassistant:', '\n\n\n']:
-        if stop in reply:
-            reply = reply[:reply.index(stop)].strip()
+        if stop in tts_reply:
+            tts_reply = tts_reply[:tts_reply.index(stop)].strip()
+    # Detect and cut repetition loops (e.g. "X. X. X.")
+    sentences = re.split(r'(?<=[.!?])\s+', tts_reply)
+    seen_s = []; deduped = []
+    for s in sentences:
+        norm = s.strip().lower()
+        if norm and norm not in seen_s:
+            seen_s.append(norm); deduped.append(s)
+        elif norm in seen_s:
+            break
+    tts_reply = ' '.join(deduped).strip()
+    # Store clean reply in conversation history (no thinking noise)
+    reply = tts_reply
     # Append assistant reply to history
     _append_turn(session_id, 'assistant', reply)
     # Synthesize via TTS
@@ -280,8 +310,13 @@ async def chat(body: dict):
                         break
                     yield chunk
         # Sanitize reply for HTTP header (strip newlines/non-ASCII)
-        safe_reply = reply.replace('\n', ' ').replace('\r', '').encode('ascii', 'ignore').decode('ascii')[:500]
-        headers = {'X-Assistant-Reply': safe_reply, 'X-Session-Id': session_id}
+        safe_reply = tts_reply.replace('\n', ' ').replace('\r', '').encode('ascii', 'ignore').decode('ascii')[:500]
+        safe_thinking = thinking_text.replace('\n', ' ').replace('\r', '').encode('ascii', 'ignore').decode('ascii')[:1000]
+        headers = {
+            'X-Assistant-Reply': safe_reply,
+            'X-Thinking': safe_thinking,
+            'X-Session-Id': session_id,
+        }
         return StreamingResponse(iterfile(path), media_type='audio/wav', background=BackgroundTask(os.remove, path), headers=headers)
     except Exception as e:
         try:
