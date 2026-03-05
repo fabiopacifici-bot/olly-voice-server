@@ -1,0 +1,7 @@
+vendor/CosyVoice/pretrained_models/
+assets/*.wav
+*.wav
+__pycache__/
+.venv/
+*.pyc
+.env
