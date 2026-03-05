@@ -5,7 +5,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=/home/pacificDev/.openclaw/workspace/repositories/olly-voice-server
-ExecStart=/home/pacificDev/.openclaw/workspace/repositories/olly-voice-server/.venv/bin/uvicorn olly_voice.app:app --host 127.0.0.1 --port 8766
+ExecStart=/home/pacificDev/.openclaw/workspace/repositories/olly-voice-server/.venv/bin/uvicorn olly_voice.app:app --host 127.0.0.1 --port 8766 --app-dir /home/pacificDev/.openclaw/workspace/repositories/olly-voice-server
 Environment=LLM_URL=http://172.20.80.1:8005
 Environment=LLM_MODEL=Qwen/Qwen3-0.6B
 Environment=WHISPER_MODEL=base.en

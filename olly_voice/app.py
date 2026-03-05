@@ -8,6 +8,7 @@ import tempfile
 import traceback
 import httpx
 import sys
+import asyncio
 
 app = FastAPI()
 BASE = Path(__file__).resolve().parent.parent
@@ -32,13 +33,6 @@ _whisper = None
 _tts_available = False
 _cosy_load_attempted = False
 _whisper_load_attempted = False
-
-# Attempt a startup check for LLM (warn only)
-try:
-    with httpx.Client(timeout=1.0) as c:
-        c.get(LLM_URL)
-except Exception:
-    print(f"WARNING: LLM server at {LLM_URL} appears unreachable. /health will report a warning.")
 
 # --- Whisper loader ---
 def load_whisper():
@@ -98,15 +92,24 @@ def load_cosy():
         _tts_available = False
         return None
 
+@app.on_event("startup")
+async def startup_event():
+    # check LLM reachability (warn only)
+    try:
+        async with httpx.AsyncClient(timeout=1.0) as c:
+            await c.get(LLM_URL)
+    except Exception:
+        print(f"WARNING: LLM server at {LLM_URL} appears unreachable.")
+    # load models in background threads so handlers don't block
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, load_whisper)
+    await loop.run_in_executor(None, load_cosy)
+
 @app.get('/health')
 async def health():
     status = {'status': 'ok'}
-    # warn if whisper or cosy not available
-    if load_whisper() is None:
-        status['whisper'] = 'missing'
-    else:
-        status['whisper'] = 'ok'
-    load_cosy()
+    # report whisper/tts availability based on already-loaded globals
+    status['whisper'] = 'ok' if _whisper is not None else 'missing'
     status['tts'] = 'ok' if _tts_available else 'stub'
     # check LLM
     try:
@@ -152,18 +155,17 @@ async def delete_history(session_id: str):
 # /tts endpoint: accepts form text and returns wav stream
 @app.post('/tts')
 async def tts(text: str = Form(...)):
-    load_cosy()
+    # Do not call load_cosy here; startup should have loaded models. If not loaded, attempt non-blocking check.
     tmpdir = tempfile.gettempdir()
     fd, path = tempfile.mkstemp(suffix='.wav', dir=tmpdir)
     os.close(fd)
     try:
         if _tts_available and _cosy:
-            # Use inference_sft if available, otherwise zero_shot
+            loop = asyncio.get_event_loop()
             try:
-                wav_bytes = _cosy['inference_sft'](text, speaker=TTS_SPEAKER)
+                wav_bytes = await loop.run_in_executor(None, lambda: _cosy['inference_sft'](text, speaker=TTS_SPEAKER))
             except Exception:
-                wav_bytes = _cosy['inference_zero_shot'](text, speaker=TTS_SPEAKER)
-            # If the inference returned bytes, write them; else, assume path
+                wav_bytes = await loop.run_in_executor(None, lambda: _cosy['inference_zero_shot'](text, speaker=TTS_SPEAKER))
             if isinstance(wav_bytes, bytes):
                 with open(path, 'wb') as f:
                     f.write(wav_bytes)
@@ -172,7 +174,6 @@ async def tts(text: str = Form(...)):
                 with open(wav_bytes,'rb') as src, open(path,'wb') as dst:
                     dst.write(src.read())
             else:
-                # fallback
                 make_silent_wav(path)
         else:
             make_silent_wav(path)
@@ -194,7 +195,7 @@ async def tts(text: str = Form(...)):
 
 @app.post('/transcribe')
 async def transcribe(file: UploadFile = File(...)):
-    model = load_whisper()
+    model = _whisper
     tmpdir = tempfile.gettempdir()
     fd, path = tempfile.mkstemp(suffix='.wav', dir=tmpdir)
     os.close(fd)
@@ -203,8 +204,9 @@ async def transcribe(file: UploadFile = File(...)):
             f.write(await file.read())
         if model is None:
             return {'text': ''}
-        # Use faster-whisper to transcribe
-        segments, info = model.transcribe(path, beam_size=5)
+        # Use faster-whisper to transcribe in a thread to avoid blocking the event loop
+        loop = asyncio.get_event_loop()
+        segments, info = await loop.run_in_executor(None, lambda: list(model.transcribe(path, beam_size=5)))
         text = ''
         for segment in segments:
             text += segment.text
@@ -260,10 +262,11 @@ async def chat(body: dict):
     os.close(fd)
     try:
         if _tts_available and _cosy:
+            loop = asyncio.get_event_loop()
             try:
-                wav_bytes = _cosy['inference_sft'](reply, speaker=TTS_SPEAKER)
+                wav_bytes = await loop.run_in_executor(None, lambda: _cosy['inference_sft'](reply, speaker=TTS_SPEAKER))
             except Exception:
-                wav_bytes = _cosy['inference_zero_shot'](reply, speaker=TTS_SPEAKER)
+                wav_bytes = await loop.run_in_executor(None, lambda: _cosy['inference_zero_shot'](reply, speaker=TTS_SPEAKER))
             if isinstance(wav_bytes, bytes):
                 with open(path,'wb') as f:
                     f.write(wav_bytes)
