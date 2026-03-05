@@ -55,10 +55,26 @@ def load_cosy():
         return _cosy
     try:
         # Add vendor paths so CosyVoice can import its modules
-        vendor_dir = BASE / 'vendor'
-        sys.path.insert(0, str(vendor_dir))
-        # CosyVoice package expected under vendor/CosyVoice
-        from CosyVoice.inference import inference_sft, inference_zero_shot
+        vendor_dir = BASE / 'vendor' / 'CosyVoice'
+        third_party = vendor_dir / 'third_party' / 'Matcha-TTS'
+        for p in [str(vendor_dir), str(third_party)]:
+            if p not in sys.path:
+                sys.path.insert(0, p)
+        # CosyVoice2 class from cosyvoice CLI
+        from cosyvoice.cli.cosyvoice import CosyVoice2
+        model_path = str(vendor_dir / 'pretrained_models' / 'CosyVoice2-0.5B')
+        _model = CosyVoice2(model_path)
+        def inference_sft(text, speaker='default', stream=False):
+            results = list(_model.inference_sft(text, speaker, stream=stream))
+            if results:
+                import torchaudio, io
+                wav = results[0]['tts_speech']
+                buf = io.BytesIO()
+                torchaudio.save(buf, wav, _model.sample_rate, format='wav')
+                return buf.getvalue()
+            return None
+        def inference_zero_shot(text, speaker='default', stream=False):
+            return inference_sft(text, speaker, stream)
         _cosy = {'inference_sft': inference_sft, 'inference_zero_shot': inference_zero_shot}
         _tts_available = True
         return _cosy
