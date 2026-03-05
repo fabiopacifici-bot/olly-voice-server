@@ -10,7 +10,18 @@ import httpx
 import sys
 import asyncio
 
+# CORS middleware
+from fastapi.middleware.cors import CORSMiddleware
+
 app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:8766", "http://127.0.0.1:8766"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["X-Assistant-Reply", "X-Thinking", "X-Session-Id"],
+)
+
 BASE = Path(__file__).resolve().parent.parent
 ASSETS = BASE / "assets"
 ASSETS.mkdir(parents=True, exist_ok=True)
@@ -20,7 +31,8 @@ LLM_URL = os.environ.get('LLM_URL', 'http://localhost:8005')
 LLM_MODEL = os.environ.get('LLM_MODEL', 'Qwen/Qwen3-0.6B')
 WHISPER_MODEL = os.environ.get('WHISPER_MODEL', 'base.en')
 WHISPER_DEVICE = os.environ.get('WHISPER_DEVICE', 'cuda')
-TTS_SPEAKER = os.environ.get('TTS_SPEAKER', 'default')
+# Piper-only TTS (no CosyVoice speaker env)
+PIPER_MODEL = os.environ.get('PIPER_MODEL', str(BASE / 'pretrained_models' / 'piper' / 'en_US-amy-medium.onnx'))
 
 # In-memory conversation store: session_id -> list of {'role': 'user'|'assistant'|'system', 'content': '...'}
 _conversations = {}
@@ -31,7 +43,6 @@ _DEFAULT_SYSTEM_PROMPT = "You are Olly, a helpful and concise voice assistant. K
 _cosy = None
 _whisper = None
 _tts_available = False
-_cosy_load_attempted = False
 _whisper_load_attempted = False
 
 # --- Whisper loader ---
@@ -53,13 +64,9 @@ def load_whisper():
         return None
 
 # --- Piper TTS loader ---
-PIPER_MODEL = os.environ.get('PIPER_MODEL', str(BASE / 'pretrained_models' / 'piper' / 'en_US-amy-medium.onnx'))
 
 def load_cosy():
-    global _cosy, _tts_available, _cosy_load_attempted
-    if _cosy_load_attempted:
-        return _cosy
-    _cosy_load_attempted = True
+    global _cosy, _tts_available
     try:
         from piper import PiperVoice
         import wave, io
@@ -86,7 +93,7 @@ async def startup_event():
         async with httpx.AsyncClient(timeout=1.0) as c:
             await c.get(LLM_URL)
     except Exception:
-        print(f"WARNING: LLM server at {LLM_URL} appears unreachable.")
+        print(f"WARNING: LLM server at {LLM_URL} is unreachable. /chat will return 502 until it's available. Set LLM_URL env var to override.")
     # load models in background threads so handlers don't block
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(None, load_whisper)
@@ -111,7 +118,7 @@ async def health():
 def make_silent_wav(path, duration_s=1, rate=16000):
     import wave, struct
     nframes = int(duration_s * rate)
-    with wave.open(path, 'w') as wf:
+    with wave.open(path, 'wb') as wf:
         wf.setnchannels(1)
         wf.setsampwidth(2)
         wf.setframerate(rate)
@@ -149,10 +156,8 @@ async def tts(text: str = Form(...)):
     try:
         if _tts_available and _cosy:
             loop = asyncio.get_event_loop()
-            try:
-                wav_bytes = await loop.run_in_executor(None, lambda: _cosy['inference_sft'](text, speaker=TTS_SPEAKER))
-            except Exception:
-                wav_bytes = await loop.run_in_executor(None, lambda: _cosy['inference_zero_shot'](text, speaker=TTS_SPEAKER))
+            # Piper-only: use inference_sft without speaker override
+            wav_bytes = await loop.run_in_executor(None, lambda: _cosy['inference_sft'](text))
             if isinstance(wav_bytes, bytes):
                 with open(path, 'wb') as f:
                     f.write(wav_bytes)
@@ -242,41 +247,51 @@ async def chat(body: dict):
         return JSONResponse({'error': f'LLM call failed: {e}'}, status_code=502)
     _t1 = _time.time()
     import re
-    # Extract thinking block separately (for UI display, not TTS)
+    # Extract <think> block if present (Qwen3 formal thinking mode)
     think_match = re.search(r'<think>(.*?)</think>', raw_reply, flags=re.DOTALL)
     thinking_text = think_match.group(1).strip() if think_match else ''
-    # If no formal <think> tag, save the raw full reply as thinking so UI can show it
-    if not thinking_text and raw_reply != raw_reply[:200]:
-        thinking_text = raw_reply
-    # Clean reply for TTS: strip <think> blocks and hallucination continuations
+
+    # Strip <think> tags from reply
     tts_reply = re.sub(r'<think>.*?</think>', '', raw_reply, flags=re.DOTALL).strip()
-    # Strip inline reasoning that Qwen3-0.6B outputs without <think> tags
-    # Pattern: "Answer. Okay, the user is asking..." or "Answer. I need to..."
-    inline_reasoning_patterns = [
-        r'\s+(Okay,?\s+the\s+(user|system)|I need to|I should|Let me|The user is asking|Since it\'s|Wait,|Actually,|Hmm,|The system)',
-        r'\s+\*\*Final Answer\*\*.*',
-        r'\s+```.*',
-        r'\s+The user then says.*',
-        r'\s+Answer:.*',
-    ]
-    for pat in inline_reasoning_patterns:
-        m = re.search(pat, tts_reply, flags=re.IGNORECASE | re.DOTALL)
-        if m:
-            tts_reply = tts_reply[:m.start()].strip()
-    for stop in ['\nUser:', '\nuser:', '\nAssistant:', '\nassistant:', '\n\n\n']:
-        if stop in tts_reply:
-            tts_reply = tts_reply[:tts_reply.index(stop)].strip()
-    # Detect and cut repetition loops (e.g. "X. X. X.")
+
+    # Strip inline reasoning patterns (Qwen3-0.6B outputs these without <think> tags)
+    # Match first occurrence of reasoning leak and cut there
+    reasoning_boundary = re.search(
+        r'\s+(Okay,?\s+(?:the\s+)?(?:user|system)|I need to|I should|Let me|'
+        r'The user (?:is asking|then says|says)|Since it\'s|Wait,|Actually,|Hmm,|'
+        r'The system|\*\*Final Answer\*\*|Answer:|```)',
+        tts_reply, flags=re.IGNORECASE
+    )
+    if reasoning_boundary:
+        # Save what came before as the clean reply; save full as thinking
+        if not thinking_text:
+            thinking_text = tts_reply[reasoning_boundary.start():].strip()
+        tts_reply = tts_reply[:reasoning_boundary.start()].strip()
+
+    # Hard stop at role continuations for stop_marker in ['\nUser:', '\nuser:', '\nAssistant:', '\nassistant:', '\n\n\n']:
+    for stop_marker in ['\nUser:', '\nuser:', '\nAssistant:', '\nassistant:', '\n\n\n']:
+        if stop_marker in tts_reply:
+            tts_reply = tts_reply[:tts_reply.index(stop_marker)].strip()
+
+    # Remove repetition loops: if same sentence appears twice, cut at first repeat
     sentences = re.split(r'(?<=[.!?])\s+', tts_reply)
-    seen_s = []; deduped = []
+    seen_s: list[str] = []
+    deduped: list[str] = []
     for s in sentences:
         norm = s.strip().lower()
-        if norm and norm not in seen_s:
-            seen_s.append(norm); deduped.append(s)
-        elif norm in seen_s:
+        if not norm:
+            continue
+        if norm in seen_s:
             break
+        seen_s.append(norm)
+        deduped.append(s)
     tts_reply = ' '.join(deduped).strip()
-    # Store clean reply in conversation history (no thinking noise)
+
+    # Final safety: if tts_reply is empty (model only produced reasoning), use a fallback
+    if not tts_reply:
+        tts_reply = "I'm not sure how to answer that. Could you rephrase?"
+
+    # Store clean reply in history
     reply = tts_reply
     # Append assistant reply to history
     _append_turn(session_id, 'assistant', reply)
@@ -287,10 +302,8 @@ async def chat(body: dict):
     try:
         if _tts_available and _cosy:
             loop = asyncio.get_event_loop()
-            try:
-                wav_bytes = await loop.run_in_executor(None, lambda: _cosy['inference_sft'](reply, speaker=TTS_SPEAKER))
-            except Exception:
-                wav_bytes = await loop.run_in_executor(None, lambda: _cosy['inference_zero_shot'](reply, speaker=TTS_SPEAKER))
+            # Piper-only: use inference_sft without speaker override
+            wav_bytes = await loop.run_in_executor(None, lambda: _cosy['inference_sft'](reply))
             if isinstance(wav_bytes, bytes):
                 with open(path,'wb') as f:
                     f.write(wav_bytes)
