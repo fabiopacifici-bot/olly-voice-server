@@ -1,0 +1,132 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Olly — Local Voice Assistant</title>
+<style>
+:root{--bg:#0b0f14;--card:#0e1620;--muted:#9aa6b2;--accent:#7dd3fc}
+*{box-sizing:border-box}
+body{margin:0;font-family:Inter,UI-sans-serif,system-ui,Segoe UI,Roboto,'Helvetica Neue',Arial;background:var(--bg);color:#e6eef6}
+.container{max-width:900px;margin:24px auto;padding:20px}
+.header{display:flex;align-items:center;gap:12px}
+.brand{font-weight:700;font-size:20px}
+.card{background:linear-gradient(180deg,rgba(255,255,255,0.02),transparent);border:1px solid rgba(255,255,255,0.03);padding:16px;border-radius:10px;margin-top:16px}
+.controls{display:flex;align-items:center;gap:12px}
+#micBtn{width:72px;height:72px;border-radius:50%;background:linear-gradient(180deg,var(--accent),#2aa9d6);border:none;color:#042029;font-weight:700;font-size:18px;display:flex;align-items:center;justify-content:center;cursor:pointer}
+.status{font-size:14px;color:var(--muted)}
+.transcript{margin-top:12px;max-height:360px;overflow:auto}
+.turn{padding:8px;border-radius:8px;margin-bottom:8px}
+.user{background:rgba(125,211,252,0.06);border:1px solid rgba(125,211,252,0.06);color:var(--accent)}
+.assistant{background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.03)}
+.small{font-size:13px;color:var(--muted)}
+.error{color:#ff6b6b}
+.footer{margin-top:12px;font-size:13px;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <div class="brand">Olly — Local Voice Assistant</div>
+    <div class="status small" id="status">Ready</div>
+  </div>
+
+  <div class="card">
+    <div class="controls">
+      <button id="micBtn" title="Hold Space or click+hold">🔊</button>
+      <div>
+        <div class="small">Hold to speak</div>
+        <div class="small">Spacebar also works</div>
+      </div>
+    </div>
+
+    <div class="transcript" id="transcript" aria-live="polite"></div>
+    <div class="footer">No external services. Transcription → LLM → TTS all local.</div>
+  </div>
+</div>
+
+<script>
+const micBtn = document.getElementById('micBtn');
+const statusEl = document.getElementById('status');
+const transcriptEl = document.getElementById('transcript');
+let mediaStream = null, mediaRecorder = null, chunks = [];
+let audioCtx = null;
+
+function setStatus(s, cls){ statusEl.textContent = s; statusEl.className = 'status small ' + (cls||''); }
+
+async function startListening(){
+  try{
+    setStatus('Listening');
+    if(!mediaStream) mediaStream = await navigator.mediaDevices.getUserMedia({audio:true});
+    mediaRecorder = new MediaRecorder(mediaStream);
+    chunks = [];
+    mediaRecorder.ondataavailable = e=>chunks.push(e.data);
+    mediaRecorder.start();
+  }catch(e){
+    setStatus('Error getting mic', 'error');
+  }
+}
+
+function stopListeningAndSend(){
+  if(!mediaRecorder) return;
+  setStatus('Transcribing');
+  mediaRecorder.onstop = async ()=>{
+    const blob = new Blob(chunks, {type: 'audio/webm'});
+    chunks = [];
+    try{
+      const fd = new FormData(); fd.append('file', blob, 'rec.webm');
+      const r = await fetch('/transcribe', {method:'POST', body: fd});
+      if(!r.ok) throw new Error('Transcribe failed');
+      const jr = await r.json();
+      addTurn('user', jr.text || '');
+      setStatus('Thinking');
+      // call /chat
+      const cr = await fetch('/chat', {method:'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({text: jr.text||''})});
+      if(!cr.ok){ const txt = await cr.text(); throw new Error('Chat failed: '+txt); }
+      // read assistant reply header if present
+      const replyHeader = cr.headers.get('X-Assistant-Reply');
+      const audioBuf = await cr.arrayBuffer();
+      const replyText = replyHeader || '';
+      addTurn('assistant', replyText);
+      setStatus('Speaking');
+      await playAudioBuffer(audioBuf);
+      setStatus('Ready');
+    }catch(err){
+      console.error(err);
+      setStatus('Error: '+err.message, 'error');
+    }
+  };
+  mediaRecorder.stop();
+}
+
+function addTurn(role, text){
+  const el = document.createElement('div');
+  el.className = 'turn ' + (role==='user'? 'user':'assistant');
+  el.innerHTML = '<div class="small">'+(role==='user'?'You':'Olly')+'</div><div>'+ (text||'<i>(no text)</i>') +'</div>';
+  transcriptEl.prepend(el);
+}
+
+async function playAudioBuffer(arrayBuffer){
+  try{
+    if(!audioCtx) audioCtx = new (window.AudioContext||window.webkitAudioContext)();
+    const buf = await audioCtx.decodeAudioData(arrayBuffer);
+    const src = audioCtx.createBufferSource();
+    src.buffer = buf; src.connect(audioCtx.destination);
+    src.start();
+    // wait for end
+    await new Promise(res=> src.onended = res);
+  }catch(e){ console.warn('Playback failed', e); }
+}
+
+// UI bindings
+micBtn.addEventListener('pointerdown', ()=>{ micBtn.classList.add('active'); startListening(); });
+micBtn.addEventListener('pointerup', ()=>{ micBtn.classList.remove('active'); stopListeningAndSend(); });
+
+// spacebar support
+let spaceDown = false;
+window.addEventListener('keydown', (e)=>{ if(e.code==='Space' && !spaceDown){ e.preventDefault(); spaceDown=true; micBtn.classList.add('active'); startListening(); } });
+window.addEventListener('keyup', (e)=>{ if(e.code==='Space'){ spaceDown=false; micBtn.classList.remove('active'); stopListeningAndSend(); } });
+
+</script>
+</body>
+</html>
