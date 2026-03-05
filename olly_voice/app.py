@@ -25,7 +25,7 @@ TTS_SPEAKER = os.environ.get('TTS_SPEAKER', 'default')
 # In-memory conversation store: session_id -> list of {'role': 'user'|'assistant'|'system', 'content': '...'}
 _conversations = {}
 _MAX_TURNS = 20
-_DEFAULT_SYSTEM_PROMPT = "You are Olly, a helpful and concise voice assistant. Keep your answers short and conversational — 1-3 sentences max. No bullet lists, no markdown, just natural speech."
+_DEFAULT_SYSTEM_PROMPT = "You are Olly, a helpful and concise voice assistant. Keep your answers short and conversational — 1-3 sentences max. No bullet lists, no markdown, no internal reasoning, just natural speech. /no_think"
 
 # Lazy-loaded globals
 _cosy = None
@@ -52,42 +52,29 @@ def load_whisper():
         _whisper = None
         return None
 
-# --- Cosy/TTS loader ---
+# --- Piper TTS loader ---
+PIPER_MODEL = os.environ.get('PIPER_MODEL', str(BASE / 'pretrained_models' / 'piper' / 'en_US-amy-medium.onnx'))
+
 def load_cosy():
     global _cosy, _tts_available, _cosy_load_attempted
     if _cosy_load_attempted:
-        return _cosy  # don't retry — cache both success and failure
-    _cosy_load_attempted = True
-    if _cosy is not None:
         return _cosy
+    _cosy_load_attempted = True
     try:
-        # Add vendor paths so CosyVoice can import its modules
-        vendor_dir = BASE / 'vendor' / 'CosyVoice'
-        third_party = vendor_dir / 'third_party' / 'Matcha-TTS'
-        for p in [str(vendor_dir), str(third_party)]:
-            if p not in sys.path:
-                sys.path.insert(0, p)
-        # CosyVoice2 class from cosyvoice CLI
-        from cosyvoice.cli.cosyvoice import CosyVoice2
-        model_path = str(vendor_dir / 'pretrained_models' / 'CosyVoice2-0.5B')
-        _model = CosyVoice2(model_path)
-        def inference_sft(text, speaker='default', stream=False):
-            results = list(_model.inference_sft(text, speaker, stream=stream))
-            if results:
-                import torchaudio, io
-                wav = results[0]['tts_speech']
-                buf = io.BytesIO()
-                torchaudio.save(buf, wav, _model.sample_rate, format='wav')
-                return buf.getvalue()
-            return None
-        def inference_zero_shot(text, speaker='default', stream=False):
-            return inference_sft(text, speaker, stream)
-        _cosy = {'inference_sft': inference_sft, 'inference_zero_shot': inference_zero_shot}
+        from piper import PiperVoice
+        import wave, io
+        voice = PiperVoice.load(PIPER_MODEL)
+        def inference_sft(text, **kwargs):
+            buf = io.BytesIO()
+            with wave.open(buf, 'wb') as wf:
+                voice.synthesize_wav(text, wf)
+            return buf.getvalue()
+        _cosy = {'inference_sft': inference_sft}
         _tts_available = True
+        print(f"Piper TTS loaded: {PIPER_MODEL}")
         return _cosy
     except Exception as e:
-        print("CosyVoice load failed:", e)
-        traceback.print_exc()
+        print("Piper TTS load failed:", e)
         _cosy = None
         _tts_available = False
         return None
@@ -110,7 +97,7 @@ async def health():
     status = {'status': 'ok'}
     # report whisper/tts availability based on already-loaded globals
     status['whisper'] = 'ok' if _whisper is not None else 'missing'
-    status['tts'] = 'ok' if _tts_available else 'stub'
+    status['tts'] = 'piper' if _tts_available else 'stub'
     # check LLM
     try:
         async with httpx.AsyncClient(timeout=1.0) as c:
@@ -237,7 +224,7 @@ async def chat(body: dict):
     for m in history:
         messages.append({'role': m['role'], 'content': m['content']})
     # Call LLM
-    payload = {'messages': messages, 'model': LLM_MODEL}
+    payload = {'messages': messages, 'model': LLM_MODEL, 'max_tokens': 200}
     try:
         async with httpx.AsyncClient(timeout=30.0) as c:
             r = await c.post(f"{LLM_URL}/chat", json=payload)
@@ -254,6 +241,13 @@ async def chat(body: dict):
     except Exception as e:
         return JSONResponse({'error': f'LLM call failed: {e}'}, status_code=502)
     _t1 = _time.time()
+    # Strip Qwen3 <think>...</think> reasoning blocks before TTS
+    import re
+    reply = re.sub(r'<think>.*?</think>', '', reply, flags=re.DOTALL).strip()
+    # Truncate at first "User:" continuation hallucination
+    for stop in ['\nUser:', '\nuser:', '\nAssistant:', '\nassistant:', '\n\n\n']:
+        if stop in reply:
+            reply = reply[:reply.index(stop)].strip()
     # Append assistant reply to history
     _append_turn(session_id, 'assistant', reply)
     # Synthesize via TTS
