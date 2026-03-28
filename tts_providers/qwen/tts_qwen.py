@@ -36,77 +36,113 @@ def load_model(model_path_or_id: str):
 
 
 def synthesize_text(model, text: str, speaker: str = None, instruct: str = None, language: str = None):
-    """Synthesize text to wav bytes using model.generate_custom_voice or model.generate.
+    """Synthesize text to wav bytes using a suitable generate API on the model.
     Returns bytes of a WAV (16-bit PCM) file.
     """
-    # Prefer model.generate_custom_voice if available (as used in app.py)
-    gen = None
+    # Try preferred APIs in order, handling models that implement different subsets
+    # 1) generate_custom_voice
+    # 2) generate_voice_design
+    # 3) generate (fallback)
+    tried = []
+    def _to_wav_bytes(audio, sr):
+        try:
+            import numpy as np
+            if hasattr(audio, 'numpy'):
+                audio = audio.numpy()
+            if audio.dtype != np.int16:
+                audio = (audio * 32767).clip(-32768, 32767).astype(np.int16)
+        except Exception:
+            if isinstance(audio, bytes):
+                return audio
+        buf = io.BytesIO()
+        with wave.open(buf, 'wb') as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(sr)
+            wf.writeframes(audio.tobytes())
+        return buf.getvalue()
+
+    # Helper to attempt a call and return wav bytes or raise
     if hasattr(model, 'generate_custom_voice'):
-        gen = model.generate_custom_voice
-        wavs, sr = gen(text=text, language=language or 'English', speaker=speaker, instruct=instruct)
-    elif hasattr(model, 'generate'):
-        wavs, sr = model.generate(text=text, speaker=speaker, instruct=instruct)
-    else:
-        raise RuntimeError('Model does not expose known generate API')
-    audio = wavs[0]
-    # Normalise numpy -> int16 if needed
-    try:
-        import numpy as np
-        if hasattr(audio,'numpy'):
-            audio = audio.numpy()
-        if audio.dtype != np.int16:
-            audio = (audio * 32767).clip(-32768, 32767).astype(np.int16)
-    except Exception:
-        # If numpy not available, assume bytes
-        if isinstance(audio, bytes):
-            return audio
-    # Write to wav buffer
-    buf = io.BytesIO()
-    with wave.open(buf, 'wb') as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)
-        wf.setframerate(sr)
-        wf.writeframes(audio.tobytes())
-    return buf.getvalue()
+        try:
+            wavs, sr = model.generate_custom_voice(text=text, language=language or 'English', speaker=speaker, instruct=instruct)
+            return _to_wav_bytes(wavs[0], sr)
+        except ValueError as e:
+            tried.append(('generate_custom_voice', str(e)))
+        except TypeError:
+            tried.append(('generate_custom_voice', 'signature mismatch'))
+
+    if hasattr(model, 'generate_voice_design'):
+        try:
+            wavs, sr = model.generate_voice_design(text=text, language=language or 'English', speaker=speaker, instruct=instruct)
+            return _to_wav_bytes(wavs[0], sr)
+        except Exception as e:
+            tried.append(('generate_voice_design', str(e)))
+
+    if hasattr(model, 'generate'):
+        try:
+            wavs, sr = model.generate(text=text, language=language or 'English', speaker=speaker, instruct=instruct)
+            return _to_wav_bytes(wavs[0], sr)
+        except Exception as e:
+            tried.append(('generate', str(e)))
+
+    # If we get here, nothing worked
+    raise RuntimeError(f"No supported generate method succeeded. Attempts: {tried}")
 
 
-def clone_voice(model, sample_wav_path: str, text: str, speaker: str = None, instruct: str = None, language: str = None):
+def clone_voice(model, sample_wav_path: str, text: str, speaker: str = None, instruct: str = None, language: str = None, x_vector_only_mode: bool = True):
     """Perform voice cloning given a sample WAV path and text. Returns WAV bytes.
-    This uses the same generate_custom_voice API but passes additional keyword if supported.
+    Tries model.generate_voice_clone or model.generate_custom_voice with common sample args.
+    x_vector_only_mode: if True, use speaker embedding only (no ICL); if False, use ICL mode.
     """
-    # If model supports a clone API, call it; otherwise try generate_custom_voice with sample
+    def _to_wav_bytes(audio, sr):
+        try:
+            import numpy as np
+            if hasattr(audio, 'numpy'):
+                audio = audio.numpy()
+            if audio.dtype != np.int16:
+                audio = (audio * 32767).clip(-32768, 32767).astype(np.int16)
+        except Exception:
+            if isinstance(audio, bytes):
+                return audio
+        buf = io.BytesIO()
+        with wave.open(buf, 'wb') as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(sr)
+            wf.writeframes(audio.tobytes())
+        return buf.getvalue()
+
+    if hasattr(model, 'generate_voice_clone'):
+        try:
+            # primary expected arg name: ref_audio
+            wavs, sr = model.generate_voice_clone(text=text, ref_audio=sample_wav_path, language=language or 'English', speaker=speaker, instruct=instruct, x_vector_only_mode=x_vector_only_mode)
+            return _to_wav_bytes(wavs[0], sr)
+        except TypeError:
+            # some models use different param names (try a few common variants)
+            for alt in ('sample', 'reference_wav', 'ref_audio', 'ref_wav'):
+                try:
+                    wavs, sr = model.generate_voice_clone(text=text, **{alt: sample_wav_path}, language=language or 'English', speaker=speaker, instruct=instruct, x_vector_only_mode=x_vector_only_mode)
+                    return _to_wav_bytes(wavs[0], sr)
+                except TypeError:
+                    continue
+                except Exception:
+                    pass
+        except Exception as e:
+            raise
+
+    # Try generate_custom_voice with common sample parameter names (most custom_voice models do not support cloning)
     if hasattr(model, 'generate_custom_voice'):
-        # Many qwen_tts variants accept an audio_base or similar; try common arg names
-        kwargs = {}
-        # try known parameter names gracefully
-        for arg in ('audio_sample', 'reference_wav', 'sample_audio', 'audio_reference', 'audio_prompt'):
+        for arg in ('audio_sample', 'reference_wav', 'sample_audio', 'audio_reference', 'audio_prompt', 'sample'):
             try:
                 wavs, sr = model.generate_custom_voice(text=text, language=language or 'English', speaker=speaker, instruct=instruct, **{arg: sample_wav_path})
-                audio = wavs[0]
-                try:
-                    import numpy as np
-                    if hasattr(audio,'numpy'):
-                        audio = audio.numpy()
-                    if audio.dtype != np.int16:
-                        audio = (audio * 32767).clip(-32768, 32767).astype(np.int16)
-                except Exception:
-                    if isinstance(audio, bytes):
-                        return audio
-                buf = io.BytesIO()
-                with wave.open(buf, 'wb') as wf:
-                    wf.setnchannels(1)
-                    wf.setsampwidth(2)
-                    wf.setframerate(sr)
-                    wf.writeframes(audio.tobytes())
-                return buf.getvalue()
+                return _to_wav_bytes(wavs[0], sr)
             except TypeError:
-                # parameter name not accepted, try next
                 continue
             except Exception as e:
-                # generation failed; raise for caller to handle
                 raise
-    # If we reach here, cloning not supported via generate_custom_voice signature
-    raise RuntimeError('Model does not support cloning via known APIs')
+
+    raise RuntimeError('Model does not support voice cloning via known APIs')
 
 
 def get_supported_speakers(model):

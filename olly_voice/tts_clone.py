@@ -37,6 +37,7 @@ async def tts_clone(
     speaker: str = Form(None),
     instruct: str = Form(None),
     sample: UploadFile = File(None),
+    x_vector_only: bool = Form(True),
 ):
     """Clone a voice from sample (optional) and synthesize text.
 
@@ -76,7 +77,7 @@ async def tts_clone(
             with open(sample_path, 'wb') as f:
                 f.write(await sample.read())
             try:
-                wav_bytes = prov.clone_voice(mdl, sample_path, text=text, speaker=speaker, instruct=instruct)
+                wav_bytes = prov.clone_voice(mdl, sample_path, text=text, speaker=speaker, instruct=instruct, x_vector_only_mode=x_vector_only)
             finally:
                 try:
                     os.remove(sample_path)
