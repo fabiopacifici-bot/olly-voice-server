@@ -21,7 +21,8 @@ def _ensure_provider():
         return None
     _provider_load_attempted = True
     try:
-        from ..tts_providers.qwen import tts_qwen as provider
+        # Use absolute import to work when running as an app module
+        from tts_providers.qwen import tts_qwen as provider
         _provider = provider
         return _provider
     except Exception as e:
