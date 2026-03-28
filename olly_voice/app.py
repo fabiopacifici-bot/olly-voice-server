@@ -401,3 +401,11 @@ async def chat(body: dict):
 ui_path = BASE / 'ui'
 if ui_path.exists():
     app.mount('/ui', StaticFiles(directory=str(ui_path)), name='ui')
+
+# Register tts_clone router if available (feature/tts-voice-clone)
+try:
+    from . import tts_clone
+    app.include_router(tts_clone.router)
+    print("Registered tts_clone router")
+except Exception as e:
+    print(f"tts_clone router not registered: {e}")
