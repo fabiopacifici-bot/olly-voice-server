@@ -5,6 +5,7 @@ from pathlib import Path
 import tempfile
 import os
 import shutil
+import asyncio
 
 router = APIRouter()
 
@@ -39,11 +40,14 @@ async def tts_clone(
     instruct: str = Form(None),
     sample: UploadFile = File(None),
     x_vector_only: bool = Form(True),
+    language: str = Form(None),
+    ref_text: str = Form(None),
 ):
     """Clone a voice from sample (optional) and synthesize text.
 
     model: '0.6' or '1.7' or a model path/id. If '0.6' or '1.7', the server will map to configured env vars.
     sample: optional wav file (small) for cloning.
+    ref_text: optional transcript of the sample to improve prosody. If not provided and a sample is present, the server will transcribe the sample locally.
     Returns WAV stream.
     """
     prov = _ensure_provider()
@@ -77,15 +81,34 @@ async def tts_clone(
             os.close(fd2)
             with open(sample_path, 'wb') as f:
                 f.write(await sample.read())
+
+            # If ref_text not provided, transcribe locally using the server's whisper loader
+            if not ref_text:
+                try:
+                    # local import to avoid cycle at module import time
+                    from .app import load_whisper
+                    whisper_model = load_whisper()
+                    if whisper_model is not None:
+                        loop = asyncio.get_event_loop()
+                        segments = await loop.run_in_executor(None, lambda: list(whisper_model.transcribe(sample_path, beam_size=5)))
+                        # join segment texts
+                        ref_text = ''.join([s.text for s in segments])
+                    else:
+                        ref_text = ''
+                except Exception as e:
+                    # transcription failure should not block cloning; log and continue with empty ref_text
+                    print(f"local transcription failed: {e}")
+                    ref_text = ''
+
             try:
-                wav_bytes = prov.clone_voice(mdl, sample_path, text=text, speaker=speaker, instruct=instruct, x_vector_only_mode=x_vector_only)
+                wav_bytes = prov.clone_voice(mdl, sample_path, text=text, ref_text=ref_text, speaker=speaker, instruct=instruct, language=language, x_vector_only_mode=x_vector_only)
             finally:
                 try:
                     os.remove(sample_path)
                 except Exception:
                     pass
         else:
-            wav_bytes = prov.synthesize_text(mdl, text=text, speaker=speaker, instruct=instruct)
+            wav_bytes = prov.synthesize_text(mdl, text=text, speaker=speaker, instruct=instruct, language=language)
 
         with open(out_path, 'wb') as f:
             f.write(wav_bytes)

@@ -10,6 +10,10 @@ Environment=LLM_URL=http://172.20.80.1:8005
 Environment=LLM_MODEL=Qwen/Qwen3-0.6B
 Environment=WHISPER_MODEL=base.en
 Environment=WHISPER_DEVICE=cuda
+# Added Qwen TTS model paths (mounted on /mnt/e)
+Environment=QWEN_TTS_0_6_MODEL=/mnt/e/models/qwen3-tts/0.6B/models--Qwen--Qwen3-TTS-12Hz-0.6B-Base
+Environment=QWEN_TTS_1_7_MODEL=/mnt/e/models/qwen3-tts/1.7B/models--Qwen--Qwen3-TTS-12Hz-1.7B-Base
+Environment=QWEN_TTS_MODEL=/mnt/e/models/qwen3-tts/1.7B/models--Qwen--Qwen3-TTS-12Hz-1.7B-Base/snapshots/fd4b254389122332181a7c3db7f27e918eec64e3
 Restart=always
 RestartSec=3
 

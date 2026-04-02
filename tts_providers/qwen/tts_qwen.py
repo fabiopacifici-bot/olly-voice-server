@@ -90,7 +90,7 @@ def synthesize_text(model, text: str, speaker: str = None, instruct: str = None,
     raise RuntimeError(f"No supported generate method succeeded. Attempts: {tried}")
 
 
-def clone_voice(model, sample_wav_path: str, text: str, speaker: str = None, instruct: str = None, language: str = None, x_vector_only_mode: bool = True):
+def clone_voice(model, sample_wav_path: str, text: str, ref_text: str = None, speaker: str = None, instruct: str = None, language: str = None, x_vector_only_mode: bool = True):
     """Perform voice cloning given a sample WAV path and text. Returns WAV bytes.
     Tries model.generate_voice_clone or model.generate_custom_voice with common sample args.
     x_vector_only_mode: if True, use speaker embedding only (no ICL); if False, use ICL mode.
@@ -116,13 +116,33 @@ def clone_voice(model, sample_wav_path: str, text: str, speaker: str = None, ins
     if hasattr(model, 'generate_voice_clone'):
         try:
             # primary expected arg name: ref_audio
-            wavs, sr = model.generate_voice_clone(text=text, ref_audio=sample_wav_path, language=language or 'English', speaker=speaker, instruct=instruct, x_vector_only_mode=x_vector_only_mode)
+            kwargs = {
+                'text': text,
+                'ref_audio': sample_wav_path,
+                'language': language or 'English',
+                'speaker': speaker,
+                'instruct': instruct,
+                'x_vector_only_mode': x_vector_only_mode,
+            }
+            if ref_text:
+                kwargs['ref_text'] = ref_text
+            wavs, sr = model.generate_voice_clone(**kwargs)
             return _to_wav_bytes(wavs[0], sr)
         except TypeError:
             # some models use different param names (try a few common variants)
             for alt in ('sample', 'reference_wav', 'ref_audio', 'ref_wav'):
                 try:
-                    wavs, sr = model.generate_voice_clone(text=text, **{alt: sample_wav_path}, language=language or 'English', speaker=speaker, instruct=instruct, x_vector_only_mode=x_vector_only_mode)
+                    kwargs = {
+                        'text': text,
+                        alt: sample_wav_path,
+                        'language': language or 'English',
+                        'speaker': speaker,
+                        'instruct': instruct,
+                        'x_vector_only_mode': x_vector_only_mode,
+                    }
+                    if ref_text:
+                        kwargs['ref_text'] = ref_text
+                    wavs, sr = model.generate_voice_clone(**kwargs)
                     return _to_wav_bytes(wavs[0], sr)
                 except TypeError:
                     continue
@@ -135,7 +155,16 @@ def clone_voice(model, sample_wav_path: str, text: str, speaker: str = None, ins
     if hasattr(model, 'generate_custom_voice'):
         for arg in ('audio_sample', 'reference_wav', 'sample_audio', 'audio_reference', 'audio_prompt', 'sample'):
             try:
-                wavs, sr = model.generate_custom_voice(text=text, language=language or 'English', speaker=speaker, instruct=instruct, **{arg: sample_wav_path})
+                kwargs = {
+                    'text': text,
+                    'language': language or 'English',
+                    'speaker': speaker,
+                    'instruct': instruct,
+                    arg: sample_wav_path,
+                }
+                if ref_text:
+                    kwargs['ref_text'] = ref_text
+                wavs, sr = model.generate_custom_voice(**kwargs)
                 return _to_wav_bytes(wavs[0], sr)
             except TypeError:
                 continue
