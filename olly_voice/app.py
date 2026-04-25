@@ -247,21 +247,45 @@ async def tts(text: str = Form(...)):
 @app.post('/transcribe')
 async def transcribe(file: UploadFile = File(...)):
     model = _whisper
+    suffix = Path(file.filename or '').suffix.lower() or '.bin'
+    allowed_suffixes = {'.wav', '.mp3', '.m4a', '.webm', '.ogg', '.flac', '.mp4'}
+    if suffix not in allowed_suffixes:
+        suffix = '.webm'
+
     tmpdir = tempfile.gettempdir()
-    fd, path = tempfile.mkstemp(suffix='.wav', dir=tmpdir)
+    fd, path = tempfile.mkstemp(suffix=suffix, dir=tmpdir)
     os.close(fd)
     try:
+        audio_bytes = await file.read()
+        if not audio_bytes:
+            return JSONResponse({'error': 'Uploaded audio is empty.'}, status_code=400)
+
         with open(path,'wb') as f:
-            f.write(await file.read())
+            f.write(audio_bytes)
+
         if model is None:
             return {'text': ''}
+
         # Use faster-whisper to transcribe in a thread to avoid blocking the event loop
         loop = asyncio.get_event_loop()
-        segments, info = await loop.run_in_executor(None, lambda: list(model.transcribe(path, beam_size=5)))
+        try:
+            segments, info = await loop.run_in_executor(None, lambda: list(model.transcribe(path, beam_size=5)))
+        except Exception as e:
+            print('ERROR /transcribe: transcription failed')
+            traceback.print_exc()
+            return JSONResponse(
+                {'error': f'Transcription failed: {type(e).__name__}: {e}'},
+                status_code=422,
+            )
+
         text = ''
         for segment in segments:
             text += segment.text
         return {'text': text}
+    except Exception as e:
+        print('ERROR /transcribe: request handling failed')
+        traceback.print_exc()
+        return JSONResponse({'error': f'Transcribe request failed: {type(e).__name__}: {e}'}, status_code=500)
     finally:
         try:
             os.remove(path)

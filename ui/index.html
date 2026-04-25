@@ -148,7 +148,16 @@ async function stopRecording(auto=false){
     try{
       const fd = new FormData(); fd.append('file', blob, 'rec.webm');
       const r = await fetch('/transcribe', {method:'POST', body: fd});
-      if(!r.ok) throw new Error('Transcribe failed');
+      if(!r.ok){
+        let msg = 'Transcribe failed';
+        try{
+          const ej = await r.json();
+          if(ej && (ej.error || ej.detail)) msg = ej.error || ej.detail;
+        }catch(_){
+          msg = `Transcribe failed (${r.status})`;
+        }
+        throw new Error(msg);
+      }
       const jr = await r.json();
       addMessage('user', jr.text || '', null, false);
       setStatus('Thinking');
