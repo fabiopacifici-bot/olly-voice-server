@@ -1,6 +1,5 @@
 vendor/CosyVoice/pretrained_models/
 assets/*.wav
-assets/meetings/
 *.wav
 __pycache__/
 .venv/

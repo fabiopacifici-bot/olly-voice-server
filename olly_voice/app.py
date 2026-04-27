@@ -26,7 +26,7 @@ app.add_middleware(
 BASE = Path(__file__).resolve().parent.parent
 ASSETS = BASE / "assets"
 ASSETS.mkdir(parents=True, exist_ok=True)
-MEETINGS_DIR = BASE / "assets" / "meetings"
+MEETINGS_DIR = Path(os.environ.get('MEETINGS_DIR', Path.home() / 'Documents' / 'Meetings'))
 MEETINGS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Config via env
