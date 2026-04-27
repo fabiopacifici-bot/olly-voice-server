@@ -3,6 +3,7 @@ from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 from pathlib import Path
+from datetime import datetime as _dt
 import os
 import tempfile
 import traceback
@@ -25,6 +26,8 @@ app.add_middleware(
 BASE = Path(__file__).resolve().parent.parent
 ASSETS = BASE / "assets"
 ASSETS.mkdir(parents=True, exist_ok=True)
+MEETINGS_DIR = BASE / "assets" / "meetings"
+MEETINGS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Config via env
 LLM_URL = os.environ.get('LLM_URL', 'http://localhost:8005')
@@ -420,6 +423,33 @@ async def chat(body: dict):
         except Exception:
             pass
         return JSONResponse({'error': str(e)}, status_code=500)
+
+# --- Meeting endpoints ---
+
+@app.post('/meeting/save')
+async def save_meeting(body: dict):
+    name = body.get('name') or f"meeting_{_dt.now().strftime('%Y%m%d_%H%M%S')}"
+    transcript = body.get('transcript', '')
+    duration = body.get('duration', '')
+    ts = _dt.now().strftime('%Y-%m-%d %H:%M:%S')
+    safe_name = ''.join(c if c.isalnum() or c in '-_ ' else '_' for c in name).strip()
+    filename = f"{_dt.now().strftime('%Y%m%d_%H%M%S')}_{safe_name[:40]}.md"
+    md = f"# {name}\n\nDate: {ts}\nDuration: {duration}\n\n## Transcript\n\n{transcript}\n"
+    path = MEETINGS_DIR / filename
+    path.write_text(md, encoding='utf-8')
+    return JSONResponse({'status': 'saved', 'filename': filename})
+
+@app.get('/meetings')
+async def list_meetings():
+    files = sorted(MEETINGS_DIR.glob('*.md'), reverse=True)
+    return JSONResponse({'meetings': [{'filename': f.name, 'modified': f.stat().st_mtime} for f in files[:20]]})
+
+@app.get('/meeting/{filename}')
+async def get_meeting(filename: str):
+    path = MEETINGS_DIR / filename
+    if not path.exists() or path.suffix != '.md':
+        return JSONResponse({'error': 'not found'}, status_code=404)
+    return JSONResponse({'content': path.read_text(encoding='utf-8')})
 
 # Serve the UI static files under /ui
 ui_path = BASE / 'ui'
