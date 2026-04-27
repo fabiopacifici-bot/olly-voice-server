@@ -344,6 +344,10 @@ async function transcribeBlob(blob){
 
 async function startMeeting(){
   if(isRecording) return;
+  if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+    meetStatus.textContent = '⚠️ Not allowed — open via http://localhost:8766/ui/index.html (not via IP)';
+    return;
+  }
   try{
     meetStatus.textContent = 'Requesting microphone…';
     meetMicStream = await navigator.mediaDevices.getUserMedia({audio:true, video:false});
@@ -395,7 +399,7 @@ async function startMeeting(){
         if(isRecording) startChunk();
       };
       meetRecorder.start();
-      chunkInterval = setTimeout(()=>{ if(meetRecorder && meetRecorder.state==='recording') meetRecorder.stop(); }, 30000);
+      chunkInterval = setTimeout(()=>{ if(meetRecorder && meetRecorder.state==='recording') meetRecorder.stop(); }, 15000);
     }
     meetStatus.textContent = 'Recording… (chunking every 30s)';
     startChunk();
