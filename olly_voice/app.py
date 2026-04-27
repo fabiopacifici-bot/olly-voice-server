@@ -3,6 +3,7 @@ from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 from pathlib import Path
+from datetime import datetime as _dt
 import os
 import tempfile
 import traceback
@@ -25,6 +26,8 @@ app.add_middleware(
 BASE = Path(__file__).resolve().parent.parent
 ASSETS = BASE / "assets"
 ASSETS.mkdir(parents=True, exist_ok=True)
+MEETINGS_DIR = Path(os.environ.get('MEETINGS_DIR', Path.home() / 'Documents' / 'Meetings'))
+MEETINGS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Config via env
 LLM_URL = os.environ.get('LLM_URL', 'http://localhost:8005')
@@ -247,21 +250,45 @@ async def tts(text: str = Form(...)):
 @app.post('/transcribe')
 async def transcribe(file: UploadFile = File(...)):
     model = _whisper
+    suffix = Path(file.filename or '').suffix.lower() or '.bin'
+    allowed_suffixes = {'.wav', '.mp3', '.m4a', '.webm', '.ogg', '.flac', '.mp4'}
+    if suffix not in allowed_suffixes:
+        suffix = '.webm'
+
     tmpdir = tempfile.gettempdir()
-    fd, path = tempfile.mkstemp(suffix='.wav', dir=tmpdir)
+    fd, path = tempfile.mkstemp(suffix=suffix, dir=tmpdir)
     os.close(fd)
     try:
+        audio_bytes = await file.read()
+        if not audio_bytes:
+            return JSONResponse({'error': 'Uploaded audio is empty.'}, status_code=400)
+
         with open(path,'wb') as f:
-            f.write(await file.read())
+            f.write(audio_bytes)
+
         if model is None:
             return {'text': ''}
+
         # Use faster-whisper to transcribe in a thread to avoid blocking the event loop
         loop = asyncio.get_event_loop()
-        segments, info = await loop.run_in_executor(None, lambda: list(model.transcribe(path, beam_size=5)))
+        try:
+            segments, info = await loop.run_in_executor(None, lambda: list(model.transcribe(path, beam_size=5)))
+        except Exception as e:
+            print('ERROR /transcribe: transcription failed')
+            traceback.print_exc()
+            return JSONResponse(
+                {'error': f'Transcription failed: {type(e).__name__}: {e}'},
+                status_code=422,
+            )
+
         text = ''
         for segment in segments:
             text += segment.text
         return {'text': text}
+    except Exception as e:
+        print('ERROR /transcribe: request handling failed')
+        traceback.print_exc()
+        return JSONResponse({'error': f'Transcribe request failed: {type(e).__name__}: {e}'}, status_code=500)
     finally:
         try:
             os.remove(path)
@@ -397,7 +424,42 @@ async def chat(body: dict):
             pass
         return JSONResponse({'error': str(e)}, status_code=500)
 
+# --- Meeting endpoints ---
+
+@app.post('/meeting/save')
+async def save_meeting(body: dict):
+    name = body.get('name') or f"meeting_{_dt.now().strftime('%Y%m%d_%H%M%S')}"
+    transcript = body.get('transcript', '')
+    duration = body.get('duration', '')
+    ts = _dt.now().strftime('%Y-%m-%d %H:%M:%S')
+    safe_name = ''.join(c if c.isalnum() or c in '-_ ' else '_' for c in name).strip()
+    filename = f"{_dt.now().strftime('%Y%m%d_%H%M%S')}_{safe_name[:40]}.md"
+    md = f"# {name}\n\nDate: {ts}\nDuration: {duration}\n\n## Transcript\n\n{transcript}\n"
+    path = MEETINGS_DIR / filename
+    path.write_text(md, encoding='utf-8')
+    return JSONResponse({'status': 'saved', 'filename': filename})
+
+@app.get('/meetings')
+async def list_meetings():
+    files = sorted(MEETINGS_DIR.glob('*.md'), reverse=True)
+    return JSONResponse({'meetings': [{'filename': f.name, 'modified': f.stat().st_mtime} for f in files[:20]]})
+
+@app.get('/meeting/{filename}')
+async def get_meeting(filename: str):
+    path = MEETINGS_DIR / filename
+    if not path.exists() or path.suffix != '.md':
+        return JSONResponse({'error': 'not found'}, status_code=404)
+    return JSONResponse({'content': path.read_text(encoding='utf-8')})
+
 # Serve the UI static files under /ui
 ui_path = BASE / 'ui'
 if ui_path.exists():
     app.mount('/ui', StaticFiles(directory=str(ui_path)), name='ui')
+
+# Register tts_clone router if available (feature/tts-voice-clone)
+try:
+    from . import tts_clone
+    app.include_router(tts_clone.router)
+    print("Registered tts_clone router")
+except Exception as e:
+    print(f"tts_clone router not registered: {e}")

@@ -26,6 +26,34 @@ body{margin:0;font-family:Inter,system-ui,Segoe UI,Roboto,Arial;background:var(-
 .hint{font-size:13px;color:var(--muted)}
 .topbar{display:flex;align-items:center;gap:8px}
 .btn{background:transparent;border:1px solid rgba(255,255,255,0.04);color:var(--muted);padding:8px 10px;border-radius:8px;cursor:pointer}
+.tabs{display:flex;gap:4px;margin-top:12px}
+.tab{padding:8px 16px;border-radius:8px 8px 0 0;border:1px solid rgba(255,255,255,0.05);border-bottom:none;cursor:pointer;font-size:14px;background:transparent;color:var(--muted);transition:background .15s}
+.tab.active{background:rgba(255,255,255,0.04);color:#e6eef6}
+.tab-panel{display:none}.tab-panel.active{display:block}
+/* Meeting UI */
+.meeting-card{background:linear-gradient(180deg,rgba(255,255,255,0.02),transparent);border:1px solid rgba(255,255,255,0.03);padding:20px;border-radius:0 12px 12px 12px}
+.meeting-controls{display:flex;flex-direction:column;align-items:center;gap:12px;padding:16px 0}
+#meetBtn{width:120px;height:120px;border-radius:999px;border:none;color:white;font-size:36px;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 6px 24px rgba(0,0,0,0.6);background:linear-gradient(180deg,#27ae60,#1e8449)}
+#meetBtn.recording{animation:pulse 1s infinite;background:linear-gradient(180deg,#ff4d4d,#ff2b2b)}
+#meetBtn.processing{background:linear-gradient(180deg,#e67e22,#ca6f1e);pointer-events:none}
+.meeting-timer{font-size:28px;font-weight:700;letter-spacing:2px;color:#e6eef6;font-variant-numeric:tabular-nums}
+.meeting-status{font-size:13px;color:var(--muted)}
+.meeting-name-row{display:flex;gap:8px;width:100%;max-width:400px}
+#meetingName{flex:1;background:#0e1620;border:1px solid rgba(255,255,255,0.07);border-radius:8px;padding:8px 12px;color:#e6eef6;font-size:14px}
+.transcript-box{background:#0a0e14;border:1px solid rgba(255,255,255,0.05);border-radius:8px;padding:12px;min-height:200px;max-height:400px;overflow:auto;font-size:13px;line-height:1.7;white-space:pre-wrap;margin-top:12px;color:#c8d8e8}
+.transcript-chunk{border-bottom:1px solid rgba(255,255,255,0.03);padding:6px 0}
+.transcript-chunk .ts{color:var(--muted);font-size:11px;margin-right:8px}
+.transcript-chunk .spk{color:#4a7fa5;font-weight:600;margin-right:6px}
+.meeting-actions{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap}
+.pill{background:#0e1620;border:1px solid rgba(255,255,255,0.07);color:var(--muted);padding:6px 14px;border-radius:999px;cursor:pointer;font-size:13px}
+.pill:hover{border-color:var(--accent);color:#e6eef6}
+.pill.danger:hover{border-color:var(--error);color:var(--error)}
+.info-banner{background:#0a1824;border:1px solid #1a4060;border-radius:8px;padding:12px;font-size:12px;color:#7ab0cc;margin-bottom:12px;line-height:1.6}
+.meetings-list{margin-top:12px}
+.meeting-item{background:#0e1620;border:1px solid rgba(255,255,255,0.04);border-radius:8px;padding:10px 14px;margin-bottom:6px;cursor:pointer;display:flex;justify-content:space-between;align-items:center}
+.meeting-item:hover{border-color:rgba(255,255,255,0.1)}
+.meeting-item .mn{font-size:14px;color:#e6eef6}
+.meeting-item .md{font-size:11px;color:var(--muted)}
 .smallSpeaker{width:18px;height:18px;border-radius:4px;background:#2b3740;display:inline-block;margin-right:6px}
 .thinking{margin-top:8px;font-size:12px;color:var(--muted)}
 .thinking summary{cursor:pointer;color:#4a7fa5;user-select:none}
@@ -43,11 +71,60 @@ body{margin:0;font-family:Inter,system-ui,Segoe UI,Roboto,Arial;background:var(-
     </div>
   </div>
 
-  <div class="card">
-    <div class="thread" id="thread" aria-live="polite"></div>
-    <div class="controls">
-      <button id="micBtn" title="Hold Space or click+hold">🎤</button>
-      <div class="hint">Hold SPACE to talk</div>
+  <div class="tabs">
+    <button class="tab active" data-tab="voice">🎤 Voice</button>
+    <button class="tab" data-tab="meeting">📝 Meeting</button>
+    <button class="tab" data-tab="saved">📂 Saved</button>
+  </div>
+
+  <!-- Voice tab -->
+  <div class="tab-panel active" id="tab-voice">
+    <div class="card">
+      <div class="thread" id="thread" aria-live="polite"></div>
+      <div class="controls">
+        <button id="micBtn" title="Hold Space or click+hold">🎤</button>
+        <div class="hint">Hold SPACE to talk</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Meeting tab -->
+  <div class="tab-panel" id="tab-meeting">
+    <div class="meeting-card">
+      <div class="info-banner">
+        💡 <strong>To record both your mic AND the call audio:</strong> when Chrome asks, choose a browser tab or window and check <em>"Share system audio"</em>. This mixes both streams for full meeting transcription.
+      </div>
+      <div class="meeting-name-row">
+        <input id="meetingName" placeholder="Meeting name (optional)" type="text">
+      </div>
+      <div class="meeting-controls">
+        <div class="meeting-timer" id="meetTimer">00:00</div>
+        <button id="meetBtn">🎙</button>
+        <div class="meeting-status" id="meetStatus">Ready to record</div>
+      </div>
+      <div class="meeting-actions">
+        <button class="pill" id="saveBtn" style="display:none">💾 Save transcript</button>
+        <button class="pill" id="copyBtn" style="display:none">📋 Copy</button>
+        <button class="pill danger" id="clearMeetBtn" style="display:none">🗑 Clear</button>
+      </div>
+      <div class="transcript-box" id="transcriptBox"><span style="color:#4a5a6a">Transcript will appear here…</span></div>
+    </div>
+  </div>
+
+  <!-- Saved tab -->
+  <div class="tab-panel" id="tab-saved">
+    <div class="meeting-card">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <span style="font-size:14px;color:var(--muted)">Past meetings</span>
+        <button class="pill" id="refreshSaved">🔄 Refresh</button>
+      </div>
+      <div class="meetings-list" id="meetingsList"></div>
+      <div id="meetingViewer" style="display:none;margin-top:16px">
+        <div style="display:flex;gap:8px;margin-bottom:8px">
+          <button class="pill" id="closeMeetingViewer">✕ Close</button>
+        </div>
+        <pre class="transcript-box" id="meetingContent" style="min-height:300px"></pre>
+      </div>
     </div>
   </div>
 </div>
@@ -148,7 +225,16 @@ async function stopRecording(auto=false){
     try{
       const fd = new FormData(); fd.append('file', blob, 'rec.webm');
       const r = await fetch('/transcribe', {method:'POST', body: fd});
-      if(!r.ok) throw new Error('Transcribe failed');
+      if(!r.ok){
+        let msg = 'Transcribe failed';
+        try{
+          const ej = await r.json();
+          if(ej && (ej.error || ej.detail)) msg = ej.error || ej.detail;
+        }catch(_){
+          msg = `Transcribe failed (${r.status})`;
+        }
+        throw new Error(msg);
+      }
       const jr = await r.json();
       addMessage('user', jr.text || '', null, false);
       setStatus('Thinking');
@@ -201,6 +287,202 @@ window.addEventListener('keyup', (e)=>{ if(e.code==='Space'){ spaceDown=false; s
 
 newConvBtn.addEventListener('click', async ()=>{
   try{ setStatus('Clearing'); await fetch('/history/'+sessionId, {method:'DELETE'}); thread.innerHTML=''; setStatus('Ready'); }catch(e){ setStatus('Error'); }
+});
+
+// --- Tab switcher ---
+document.querySelectorAll('.tab').forEach(t=>{
+  t.addEventListener('click',()=>{
+    document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
+    document.querySelectorAll('.tab-panel').forEach(x=>x.classList.remove('active'));
+    t.classList.add('active');
+    document.getElementById('tab-'+t.dataset.tab).classList.add('active');
+    if(t.dataset.tab==='saved') loadSavedMeetings();
+  });
+});
+
+// --- Meeting Recorder ---
+const meetBtn = document.getElementById('meetBtn');
+const meetTimer = document.getElementById('meetTimer');
+const meetStatus = document.getElementById('meetStatus');
+const transcriptBox = document.getElementById('transcriptBox');
+const saveBtn = document.getElementById('saveBtn');
+const copyBtn = document.getElementById('copyBtn');
+const clearMeetBtn = document.getElementById('clearMeetBtn');
+
+let meetRecorder = null, meetChunks = [], meetStream = null, meetMicStream = null;
+let meetInterval = null, meetStartTime = null;
+let meetTranscriptLines = [], isRecording = false;
+let chunkInterval = null;
+
+function formatTime(ms){
+  const s = Math.floor(ms/1000), m = Math.floor(s/60);
+  return String(m).padStart(2,'0')+':'+String(s%60).padStart(2,'0');
+}
+
+function appendTranscript(text, ts){
+  if(!text.trim()) return;
+  const t = ts || new Date().toLocaleTimeString();
+  meetTranscriptLines.push(`[${t}] ${text.trim()}`);
+  const div = document.createElement('div');
+  div.className='transcript-chunk';
+  div.innerHTML=`<span class="ts">${t}</span>${text.trim()}`;
+  if(transcriptBox.querySelector('span[style]')) transcriptBox.innerHTML='';
+  transcriptBox.appendChild(div);
+  transcriptBox.scrollTop = transcriptBox.scrollHeight;
+}
+
+async function transcribeBlob(blob){
+  const fd = new FormData();
+  fd.append('file', blob, 'chunk.webm');
+  try{
+    const r = await fetch('/transcribe',{method:'POST',body:fd});
+    if(!r.ok) return '';
+    const j = await r.json();
+    return j.text || '';
+  }catch(e){ return ''; }
+}
+
+async function startMeeting(){
+  if(isRecording) return;
+  if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+    meetStatus.textContent = '⚠️ Not allowed — open via http://localhost:8766/ui/index.html (not via IP)';
+    return;
+  }
+  try{
+    meetStatus.textContent = 'Requesting microphone…';
+    meetMicStream = await navigator.mediaDevices.getUserMedia({audio:true, video:false});
+    let audioTracks = [...meetMicStream.getAudioTracks()];
+
+    // Try to grab system audio via getDisplayMedia
+    try{
+      meetStatus.textContent = 'Requesting screen share (check \"Share system audio\")…';
+      const displayStream = await navigator.mediaDevices.getDisplayMedia({audio:true, video:{width:1,height:1}});
+      const displayAudioTracks = displayStream.getAudioTracks();
+      if(displayAudioTracks.length > 0) audioTracks = [...audioTracks, ...displayAudioTracks];
+      // Stop video immediately
+      displayStream.getVideoTracks().forEach(t=>t.stop());
+    }catch(e){
+      meetStatus.textContent = 'System audio skipped — mic only';
+    }
+
+    // Mix all audio tracks via AudioContext
+    const ctx = new AudioContext();
+    const dest = ctx.createMediaStreamDestination();
+    audioTracks.forEach(track=>{
+      const src = ctx.createMediaStreamSource(new MediaStream([track]));
+      src.connect(dest);
+    });
+    meetStream = dest.stream;
+
+    isRecording = true;
+    meetStartTime = Date.now();
+    meetBtn.textContent = '⏹';
+    meetBtn.classList.add('recording');
+    meetTranscriptLines = [];
+    transcriptBox.innerHTML = '<span style="color:#4a5a6a">Recording…</span>';
+    saveBtn.style.display='none'; copyBtn.style.display='none'; clearMeetBtn.style.display='none';
+
+    meetInterval = setInterval(()=>{
+      meetTimer.textContent = formatTime(Date.now()-meetStartTime);
+    }, 500);
+
+    // Rolling 30s chunks
+    function startChunk(){
+      if(!isRecording) return;
+      meetChunks = [];
+      meetRecorder = new MediaRecorder(meetStream);
+      meetRecorder.ondataavailable = e=>meetChunks.push(e.data);
+      meetRecorder.onstop = async ()=>{
+        const blob = new Blob(meetChunks, {type:'audio/webm'});
+        const text = await transcribeBlob(blob);
+        if(text) appendTranscript(text);
+        if(isRecording) startChunk();
+      };
+      meetRecorder.start();
+      chunkInterval = setTimeout(()=>{ if(meetRecorder && meetRecorder.state==='recording') meetRecorder.stop(); }, 15000);
+    }
+    meetStatus.textContent = 'Recording… (chunking every 30s)';
+    startChunk();
+
+  }catch(e){
+    meetStatus.textContent = 'Error: '+e.message;
+    isRecording = false;
+  }
+}
+
+async function stopMeeting(){
+  if(!isRecording) return;
+  isRecording = false;
+  clearTimeout(chunkInterval);
+  clearInterval(meetInterval);
+  meetBtn.textContent = '🎙';
+  meetBtn.classList.remove('recording');
+  meetBtn.classList.add('processing');
+  meetStatus.textContent = 'Finalising transcript…';
+  if(meetRecorder && meetRecorder.state==='recording') meetRecorder.stop();
+  meetMicStream && meetMicStream.getTracks().forEach(t=>t.stop());
+  // Wait a moment for last chunk to process
+  await new Promise(res=>setTimeout(res, 2000));
+  meetBtn.classList.remove('processing');
+  meetStatus.textContent = 'Done — '+meetTimer.textContent+' recorded';
+  saveBtn.style.display=''; copyBtn.style.display=''; clearMeetBtn.style.display='';
+}
+
+meetBtn.addEventListener('click', ()=>{ isRecording ? stopMeeting() : startMeeting(); });
+
+saveBtn.addEventListener('click', async ()=>{
+  const name = document.getElementById('meetingName').value || '';
+  const duration = meetTimer.textContent;
+  const transcript = meetTranscriptLines.join('\n');
+  try{
+    const r = await fetch('/meeting/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,duration,transcript})});
+    const j = await r.json();
+    meetStatus.textContent = 'Saved: '+j.filename;
+  }catch(e){ meetStatus.textContent = 'Save failed: '+e.message; }
+});
+
+copyBtn.addEventListener('click', ()=>{
+  navigator.clipboard.writeText(meetTranscriptLines.join('\n'));
+  copyBtn.textContent = '✅ Copied';
+  setTimeout(()=>copyBtn.textContent='📋 Copy', 2000);
+});
+
+clearMeetBtn.addEventListener('click', ()=>{
+  meetTranscriptLines = [];
+  transcriptBox.innerHTML = '<span style="color:#4a5a6a">Transcript will appear here…</span>';
+  meetTimer.textContent = '00:00';
+  meetStatus.textContent = 'Ready to record';
+  saveBtn.style.display='none'; copyBtn.style.display='none'; clearMeetBtn.style.display='none';
+});
+
+// --- Saved meetings ---
+async function loadSavedMeetings(){
+  const list = document.getElementById('meetingsList');
+  list.innerHTML = '<span style="color:var(--muted);font-size:13px">Loading…</span>';
+  try{
+    const r = await fetch('/meetings'); const j = await r.json();
+    list.innerHTML = '';
+    if(!j.meetings.length){ list.innerHTML='<span style="color:var(--muted);font-size:13px">No saved meetings yet.</span>'; return; }
+    j.meetings.forEach(m=>{
+      const el = document.createElement('div'); el.className='meeting-item';
+      const d = new Date(m.modified*1000);
+      el.innerHTML=`<span class="mn">${m.filename.replace(/^\d{8}_\d{6}_/,'').replace('.md','')}</span><span class="md">${d.toLocaleString()}</span>`;
+      el.addEventListener('click', async ()=>{
+        const rv = document.getElementById('meetingViewer');
+        const rc = document.getElementById('meetingContent');
+        rv.style.display='block';
+        const rr = await fetch('/meeting/'+m.filename); const jj = await rr.json();
+        rc.textContent = jj.content;
+        rv.scrollIntoView({behavior:'smooth'});
+      });
+      list.appendChild(el);
+    });
+  }catch(e){ list.innerHTML='<span style="color:var(--error)">Error loading</span>'; }
+}
+
+document.getElementById('refreshSaved').addEventListener('click', loadSavedMeetings);
+document.getElementById('closeMeetingViewer').addEventListener('click', ()=>{
+  document.getElementById('meetingViewer').style.display='none';
 });
 
 // On load
