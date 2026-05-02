@@ -30,6 +30,9 @@ MEETINGS_DIR = Path(os.environ.get('MEETINGS_DIR', Path.home() / 'Documents' / '
 MEETINGS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Config via env
+OPENCLAW_API_URL = os.environ.get('OPENCLAW_API_URL', 'http://localhost:8880')
+OPENCLAW_TOKEN = os.environ.get('OPENCLAW_TOKEN', '')
+NSA_CLIENTS_CHAT_ID = os.environ.get('NSA_CLIENTS_CHAT_ID', '')  # Telegram group chat ID
 LLM_URL = os.environ.get('LLM_URL', 'http://localhost:8005')
 LLM_MODEL = os.environ.get('LLM_MODEL', 'Qwen/Qwen3.5-9B')
 WHISPER_MODEL = os.environ.get('WHISPER_MODEL', 'base.en')
@@ -450,6 +453,88 @@ async def get_meeting(filename: str):
     if not path.exists() or path.suffix != '.md':
         return JSONResponse({'error': 'not found'}, status_code=404)
     return JSONResponse({'content': path.read_text(encoding='utf-8')})
+
+@app.post('/meeting/stream-chunk')
+async def stream_chunk(body: dict):
+    """Forward a transcript chunk to a Telegram group via OpenClaw message API."""
+    text = body.get('text', '').strip()
+    chat_id = body.get('chat_id') or NSA_CLIENTS_CHAT_ID
+    timestamp = body.get('timestamp', '')
+    if not text or not chat_id:
+        return JSONResponse({'status': 'skipped'})
+    message = f"📝 [{timestamp}] {text}"
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.post(
+                f"{OPENCLAW_API_URL}/api/message/send",
+                json={"channel": "telegram", "target": chat_id, "message": message},
+                headers={"Authorization": f"Bearer {OPENCLAW_TOKEN}"} if OPENCLAW_TOKEN else {}
+            )
+        return JSONResponse({'status': 'sent', 'code': resp.status_code})
+    except Exception as e:
+        return JSONResponse({'status': 'error', 'detail': str(e)}, status_code=500)
+
+@app.get('/chats')
+async def list_chats():
+    """Return configured Telegram chats for the UI dropdown."""
+    chats = []
+    if NSA_CLIENTS_CHAT_ID:
+        chats.append({'id': NSA_CLIENTS_CHAT_ID, 'name': 'NSA Clients'})
+    # Future: load from config file
+    return JSONResponse({'chats': chats})
+
+AUTOSAVE_DIR = MEETINGS_DIR / '.autosave'
+AUTOSAVE_DIR.mkdir(parents=True, exist_ok=True)
+
+@app.post('/meeting/autosave')
+async def autosave_chunk(body: dict):
+    """Append a transcript chunk to the autosave file for crash protection."""
+    session_id = body.get('session_id', 'unknown')
+    meeting_name = body.get('meeting_name', 'untitled')
+    chunk_text = body.get('chunk_text', '').strip()
+    timestamp = body.get('timestamp', _dt.now().strftime('%H:%M'))
+    if not chunk_text:
+        return JSONResponse({'status': 'skipped'})
+    safe_name = ''.join(c if c.isalnum() or c in '-_ ' else '_' for c in meeting_name).strip()[:40]
+    filename = f"{session_id}_{safe_name}.md"
+    path = AUTOSAVE_DIR / filename
+    if not path.exists():
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(f"# {meeting_name}\n\nAutosave started: {_dt.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n## Transcript\n\n")
+    with open(path, 'a', encoding='utf-8') as f:
+        f.write(f"[{timestamp}] {chunk_text}\n\n")
+    return JSONResponse({'status': 'saved', 'filename': filename})
+
+@app.get('/meeting/autosaves')
+async def list_autosaves():
+    """Return orphaned autosave files for recovery banner."""
+    files = sorted(AUTOSAVE_DIR.glob('*.md'), reverse=True)
+    return JSONResponse({'autosaves': [
+        {'filename': f.name, 'modified': f.stat().st_mtime, 'size': f.stat().st_size}
+        for f in files
+    ]})
+
+@app.post('/meeting/autosave/recover')
+async def recover_autosave(body: dict):
+    """Promote an autosave to a final meeting file."""
+    filename = body.get('filename', '')
+    path = AUTOSAVE_DIR / filename
+    if not path.exists() or path.suffix != '.md':
+        return JSONResponse({'error': 'not found'}, status_code=404)
+    content = path.read_text(encoding='utf-8')
+    # Save as final meeting
+    final_name = f"recovered_{_dt.now().strftime('%Y%m%d_%H%M%S')}_{filename}"
+    (MEETINGS_DIR / final_name).write_text(content, encoding='utf-8')
+    path.unlink()
+    return JSONResponse({'status': 'recovered', 'filename': final_name, 'content': content})
+
+@app.delete('/meeting/autosave/{filename}')
+async def delete_autosave(filename: str):
+    path = AUTOSAVE_DIR / filename
+    if path.exists() and path.suffix == '.md':
+        path.unlink()
+        return JSONResponse({'status': 'deleted'})
+    return JSONResponse({'error': 'not found'}, status_code=404)
 
 # Serve the UI static files under /ui
 ui_path = BASE / 'ui'
