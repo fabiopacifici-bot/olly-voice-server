@@ -1,4 +1,4 @@
-from fastapi import FastAPI, File, UploadFile, Form
+from fastapi import FastAPI, File, UploadFile, Form, BackgroundTasks
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
@@ -30,6 +30,10 @@ MEETINGS_DIR = Path(os.environ.get('MEETINGS_DIR', Path.home() / 'Documents' / '
 MEETINGS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Config via env
+OPENCLAW_API_URL = os.environ.get('OPENCLAW_API_URL', 'http://localhost:8880')
+OPENCLAW_TOKEN = os.environ.get('OPENCLAW_TOKEN', '')
+NSA_CLIENTS_CHAT_ID = os.environ.get('NSA_CLIENTS_CHAT_ID', '')  # Telegram group chat ID
+RECONCILE_AGENTS = os.environ.get('RECONCILE_AGENTS', 'lawy,marty,olly')  # comma-separated
 LLM_URL = os.environ.get('LLM_URL', 'http://localhost:8005')
 LLM_MODEL = os.environ.get('LLM_MODEL', 'Qwen/Qwen3.5-9B')
 WHISPER_MODEL = os.environ.get('WHISPER_MODEL', 'base.en')
@@ -427,17 +431,127 @@ async def chat(body: dict):
 # --- Meeting endpoints ---
 
 @app.post('/meeting/save')
-async def save_meeting(body: dict):
+async def save_meeting(body: dict, background_tasks: BackgroundTasks):
     name = body.get('name') or f"meeting_{_dt.now().strftime('%Y%m%d_%H%M%S')}"
     transcript = body.get('transcript', '')
     duration = body.get('duration', '')
+    agents = body.get('agents', RECONCILE_AGENTS.split(','))
     ts = _dt.now().strftime('%Y-%m-%d %H:%M:%S')
     safe_name = ''.join(c if c.isalnum() or c in '-_ ' else '_' for c in name).strip()
     filename = f"{_dt.now().strftime('%Y%m%d_%H%M%S')}_{safe_name[:40]}.md"
     md = f"# {name}\n\nDate: {ts}\nDuration: {duration}\n\n## Transcript\n\n{transcript}\n"
     path = MEETINGS_DIR / filename
     path.write_text(md, encoding='utf-8')
+    # Trigger reconciliation in background
+    if transcript.strip():
+        background_tasks.add_task(_run_reconciliation, name, transcript, agents, filename)
     return JSONResponse({'status': 'saved', 'filename': filename})
+
+
+@app.post('/meeting/reconcile')
+async def reconcile_meeting(body: dict, background_tasks: BackgroundTasks):
+    """Trigger post-meeting memory reconciliation for each participating agent."""
+    filename = body.get('filename', '')
+    meeting_name = body.get('meeting_name', '')
+    agents = body.get('agents', RECONCILE_AGENTS.split(','))
+    transcript = body.get('transcript', '')
+
+    if not transcript or not meeting_name:
+        return JSONResponse({'status': 'skipped', 'reason': 'no transcript or name'})
+
+    background_tasks.add_task(_run_reconciliation, meeting_name, transcript, agents, filename)
+    return JSONResponse({'status': 'reconciliation_started', 'agents': agents})
+
+
+async def _run_reconciliation(meeting_name: str, transcript: str, agents: list, filename: str):
+    """Background task: write reconciliation notes to each agent workspace."""
+    ts = _dt.now().strftime('%Y-%m-%d')
+    timestamp = _dt.now().strftime('%Y-%m-%d %H:%M:%S')
+
+    # Agent workspace mapping
+    agent_workspaces = {
+        'lawy': {
+            'memory_dir': Path.home() / '.openclaw' / 'workspace-legal' / 'memory',
+            'client_dir': Path.home() / '.openclaw' / 'workspace-legal' / 'clients',
+            'role': 'Legal and IP advisor',
+            'focus': 'IP risks, co-development language, licensing concerns, commitments made'
+        },
+        'marty': {
+            'memory_dir': Path.home() / '.openclaw' / 'workspace-marketing' / 'memory',
+            'client_dir': Path.home() / '.openclaw' / 'workspace-marketing' / 'clients',
+            'role': 'Marketing and strategy advisor',
+            'focus': 'positioning notes, market signals, client interest, messaging corrections'
+        },
+        'olly': {
+            'memory_dir': Path.home() / '.openclaw' / 'workspace' / 'memory',
+            'client_dir': Path.home() / '.openclaw' / 'workspace' / 'clients',
+            'role': 'Technical assistant',
+            'focus': 'technical decisions, follow-up actions, project context, open questions'
+        }
+    }
+
+    # Extract client/project slug from meeting name
+    client_slug = ''.join(c if c.isalnum() or c in '-_' else '_' for c in meeting_name.lower()).strip('_')
+
+    results = []
+    for agent_name in agents:
+        agent_name = agent_name.strip().lower()
+        ws = agent_workspaces.get(agent_name)
+        if not ws:
+            continue
+        try:
+            # Ensure dirs exist
+            ws['memory_dir'].mkdir(parents=True, exist_ok=True)
+            ws['client_dir'].mkdir(parents=True, exist_ok=True)
+
+            # Write daily memory note
+            memory_file = ws['memory_dir'] / f"{ts}-meeting-{client_slug}.md"
+            note = f"""# Meeting Notes — {meeting_name}
+*Reconciled: {timestamp} | Agent: {agent_name} ({ws['role']})*
+
+## Meeting
+- **Name:** {meeting_name}
+- **File:** {filename}
+- **Date:** {timestamp}
+
+## Focus for this agent
+{ws['focus']}
+
+## Transcript
+{transcript}
+
+---
+*Auto-generated by post-meeting reconciliation. Review and update as needed.*
+"""
+            memory_file.write_text(note, encoding='utf-8')
+
+            # Write/update client folder entry
+            client_folder = ws['client_dir'] / client_slug
+            client_folder.mkdir(parents=True, exist_ok=True)
+            client_meeting_file = client_folder / f"meeting_{_dt.now().strftime('%Y%m%d_%H%M%S')}.md"
+            client_meeting_file.write_text(note, encoding='utf-8')
+
+            results.append({'agent': agent_name, 'status': 'written', 'memory': str(memory_file)})
+        except Exception as e:
+            results.append({'agent': agent_name, 'status': 'error', 'detail': str(e)})
+
+    # Send summary to Fabio via OpenClaw
+    if OPENCLAW_API_URL and NSA_CLIENTS_CHAT_ID:
+        summary_lines = [f"\U0001f9e0 Post-meeting memory reconciled: *{meeting_name}*\n"]
+        for r in results:
+            icon = '\u2705' if r['status'] == 'written' else '\u274c'
+            summary_lines.append(f"{icon} {r['agent'].capitalize()} — {r['status']}")
+        summary_lines.append(f"\nWrote to: {', '.join(f['agent'] for f in results if f['status'] == 'written')} workspaces")
+
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                await client.post(
+                    f"{OPENCLAW_API_URL}/api/message/send",
+                    json={"channel": "telegram", "target": "6395145098", "message": '\n'.join(summary_lines)},
+                    headers={"Authorization": f"Bearer {OPENCLAW_TOKEN}"} if OPENCLAW_TOKEN else {}
+                )
+        except Exception:
+            pass
 
 @app.get('/meetings')
 async def list_meetings():
@@ -450,6 +564,88 @@ async def get_meeting(filename: str):
     if not path.exists() or path.suffix != '.md':
         return JSONResponse({'error': 'not found'}, status_code=404)
     return JSONResponse({'content': path.read_text(encoding='utf-8')})
+
+@app.post('/meeting/stream-chunk')
+async def stream_chunk(body: dict):
+    """Forward a transcript chunk to a Telegram group via OpenClaw message API."""
+    text = body.get('text', '').strip()
+    chat_id = body.get('chat_id') or NSA_CLIENTS_CHAT_ID
+    timestamp = body.get('timestamp', '')
+    if not text or not chat_id:
+        return JSONResponse({'status': 'skipped'})
+    message = f"📝 [{timestamp}] {text}"
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.post(
+                f"{OPENCLAW_API_URL}/api/message/send",
+                json={"channel": "telegram", "target": chat_id, "message": message},
+                headers={"Authorization": f"Bearer {OPENCLAW_TOKEN}"} if OPENCLAW_TOKEN else {}
+            )
+        return JSONResponse({'status': 'sent', 'code': resp.status_code})
+    except Exception as e:
+        return JSONResponse({'status': 'error', 'detail': str(e)}, status_code=500)
+
+@app.get('/chats')
+async def list_chats():
+    """Return configured Telegram chats for the UI dropdown."""
+    chats = []
+    if NSA_CLIENTS_CHAT_ID:
+        chats.append({'id': NSA_CLIENTS_CHAT_ID, 'name': 'NSA Clients'})
+    # Future: load from config file
+    return JSONResponse({'chats': chats})
+
+AUTOSAVE_DIR = MEETINGS_DIR / '.autosave'
+AUTOSAVE_DIR.mkdir(parents=True, exist_ok=True)
+
+@app.post('/meeting/autosave')
+async def autosave_chunk(body: dict):
+    """Append a transcript chunk to the autosave file for crash protection."""
+    session_id = body.get('session_id', 'unknown')
+    meeting_name = body.get('meeting_name', 'untitled')
+    chunk_text = body.get('chunk_text', '').strip()
+    timestamp = body.get('timestamp', _dt.now().strftime('%H:%M'))
+    if not chunk_text:
+        return JSONResponse({'status': 'skipped'})
+    safe_name = ''.join(c if c.isalnum() or c in '-_ ' else '_' for c in meeting_name).strip()[:40]
+    filename = f"{session_id}_{safe_name}.md"
+    path = AUTOSAVE_DIR / filename
+    if not path.exists():
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(f"# {meeting_name}\n\nAutosave started: {_dt.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n## Transcript\n\n")
+    with open(path, 'a', encoding='utf-8') as f:
+        f.write(f"[{timestamp}] {chunk_text}\n\n")
+    return JSONResponse({'status': 'saved', 'filename': filename})
+
+@app.get('/meeting/autosaves')
+async def list_autosaves():
+    """Return orphaned autosave files for recovery banner."""
+    files = sorted(AUTOSAVE_DIR.glob('*.md'), reverse=True)
+    return JSONResponse({'autosaves': [
+        {'filename': f.name, 'modified': f.stat().st_mtime, 'size': f.stat().st_size}
+        for f in files
+    ]})
+
+@app.post('/meeting/autosave/recover')
+async def recover_autosave(body: dict):
+    """Promote an autosave to a final meeting file."""
+    filename = body.get('filename', '')
+    path = AUTOSAVE_DIR / filename
+    if not path.exists() or path.suffix != '.md':
+        return JSONResponse({'error': 'not found'}, status_code=404)
+    content = path.read_text(encoding='utf-8')
+    # Save as final meeting
+    final_name = f"recovered_{_dt.now().strftime('%Y%m%d_%H%M%S')}_{filename}"
+    (MEETINGS_DIR / final_name).write_text(content, encoding='utf-8')
+    path.unlink()
+    return JSONResponse({'status': 'recovered', 'filename': final_name, 'content': content})
+
+@app.delete('/meeting/autosave/{filename}')
+async def delete_autosave(filename: str):
+    path = AUTOSAVE_DIR / filename
+    if path.exists() and path.suffix == '.md':
+        path.unlink()
+        return JSONResponse({'status': 'deleted'})
+    return JSONResponse({'error': 'not found'}, status_code=404)
 
 # Serve the UI static files under /ui
 ui_path = BASE / 'ui'

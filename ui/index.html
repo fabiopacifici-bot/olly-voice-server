@@ -55,6 +55,16 @@ body{margin:0;font-family:Inter,system-ui,Segoe UI,Roboto,Arial;background:var(-
 .meeting-item .mn{font-size:14px;color:#e6eef6}
 .meeting-item .md{font-size:11px;color:var(--muted)}
 .smallSpeaker{width:18px;height:18px;border-radius:4px;background:#2b3740;display:inline-block;margin-right:6px}
+.group-stream-row{display:flex;align-items:center;gap:10px;width:100%;max-width:400px;margin-top:6px}
+.stream-toggle{background:transparent;border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:5px 12px;color:var(--muted);font-size:13px;cursor:pointer;transition:all .15s}
+.stream-toggle.active{background:rgba(74,127,165,0.2);border-color:#4a7fa5;color:#4a7fa5}
+.chat-selector{background:#0e1620;border:1px solid rgba(255,255,255,0.07);border-radius:6px;padding:5px 10px;color:#e6eef6;font-size:13px;display:none}
+.agent-checkboxes{display:flex;gap:12px;flex-wrap:wrap;font-size:13px;color:var(--muted);margin-top:6px}
+.agent-checkboxes label{display:flex;align-items:center;gap:5px;cursor:pointer}
+.agent-checkboxes input[type=checkbox]{accent-color:#4a7fa5}
+.stream-status{font-size:11px;color:#4a7fa5;margin-left:4px;display:none}
+.recovery-banner{background:rgba(255,200,0,0.08);border:1px solid rgba(255,200,0,0.3);border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:13px;color:#ffd060;display:none}
+.recovery-banner button{background:transparent;border:1px solid rgba(255,200,0,0.4);border-radius:5px;padding:3px 10px;color:#ffd060;cursor:pointer;margin-left:8px;font-size:12px}
 .thinking{margin-top:8px;font-size:12px;color:var(--muted)}
 .thinking summary{cursor:pointer;color:#4a7fa5;user-select:none}
 .thinking summary:hover{color:var(--accent)}
@@ -91,11 +101,26 @@ body{margin:0;font-family:Inter,system-ui,Segoe UI,Roboto,Arial;background:var(-
   <!-- Meeting tab -->
   <div class="tab-panel" id="tab-meeting">
     <div class="meeting-card">
+      <!-- Recovery banner -->
+      <div class="recovery-banner" id="recoveryBanner"></div>
       <div class="info-banner">
         💡 <strong>To record both your mic AND the call audio:</strong> when Chrome asks, choose a browser tab or window and check <em>"Share system audio"</em>. This mixes both streams for full meeting transcription.
       </div>
       <div class="meeting-name-row">
         <input id="meetingName" placeholder="Meeting name (optional)" type="text">
+      </div>
+      <!-- Group stream -->
+      <div class="group-stream-row">
+        <button class="stream-toggle" id="streamToggle" onclick="toggleStream()">📡 Live to group</button>
+        <select class="chat-selector" id="chatSelector"></select>
+        <span class="stream-status" id="streamStatus">● Streaming</span>
+      </div>
+      <!-- Agent checkboxes -->
+      <div class="agent-checkboxes" id="agentCheckboxes" style="display:none">
+        <label><input type="checkbox" id="agentLaywy" checked> Lawy</label>
+        <label><input type="checkbox" id="agentMarty" checked> Marty</label>
+        <label><input type="checkbox" id="agentOlly"> Olly</label>
+        <label><input type="checkbox" id="agentSage"> Sage</label>
       </div>
       <div class="meeting-controls">
         <div class="meeting-timer" id="meetTimer">00:00</div>
@@ -313,6 +338,9 @@ let meetRecorder = null, meetChunks = [], meetStream = null, meetMicStream = nul
 let meetInterval = null, meetStartTime = null;
 let meetTranscriptLines = [], isRecording = false;
 let chunkInterval = null;
+let streamEnabled = false;
+let activeChatId = '';
+let meetSessionId = null;
 
 function formatTime(ms){
   const s = Math.floor(ms/1000), m = Math.floor(s/60);
@@ -376,6 +404,7 @@ async function startMeeting(){
 
     isRecording = true;
     meetStartTime = Date.now();
+    meetSessionId = 'meet_' + Date.now();
     meetBtn.textContent = '⏹';
     meetBtn.classList.add('recording');
     meetTranscriptLines = [];
@@ -395,7 +424,12 @@ async function startMeeting(){
       meetRecorder.onstop = async ()=>{
         const blob = new Blob(meetChunks, {type:'audio/webm'});
         const text = await transcribeBlob(blob);
-        if(text) appendTranscript(text);
+        if(text) {
+          appendTranscript(text);
+          const ts = new Date().toLocaleTimeString('en-GB', {hour:'2-digit', minute:'2-digit'});
+          streamChunk(text, ts);
+          autosaveChunk(text, ts);
+        }
         if(isRecording) startChunk();
       };
       meetRecorder.start();
@@ -434,10 +468,22 @@ saveBtn.addEventListener('click', async ()=>{
   const name = document.getElementById('meetingName').value || '';
   const duration = meetTimer.textContent;
   const transcript = meetTranscriptLines.join('\n');
+  // Collect selected agents
+  const agents = [];
+  if (document.getElementById('agentLaywy')?.checked) agents.push('lawy');
+  if (document.getElementById('agentMarty')?.checked) agents.push('marty');
+  if (document.getElementById('agentOlly')?.checked) agents.push('olly');
+  if (document.getElementById('agentSage')?.checked) agents.push('sage');
   try{
-    const r = await fetch('/meeting/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,duration,transcript})});
+    const r = await fetch('/meeting/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,duration,transcript,agents:agents.length?agents:['lawy','marty','olly']})});
     const j = await r.json();
-    meetStatus.textContent = 'Saved: '+j.filename;
+    meetStatus.textContent = 'Saved ✓ — reconciling memories…';
+    // Clean up autosave after successful save
+    if (meetSessionId) {
+      const safe = name.replace(/[^a-zA-Z0-9\-_ ]/g, '_').trim().substring(0, 40);
+      fetch(`/meeting/autosave/${meetSessionId}_${safe}.md`, {method:'DELETE'}).catch(()=>{});
+    }
+    setTimeout(()=>{ meetStatus.textContent = 'Saved: '+j.filename; }, 3000);
   }catch(e){ meetStatus.textContent = 'Save failed: '+e.message; }
 });
 
@@ -455,7 +501,91 @@ clearMeetBtn.addEventListener('click', ()=>{
   saveBtn.style.display='none'; copyBtn.style.display='none'; clearMeetBtn.style.display='none';
 });
 
+async function loadChats() {
+  try {
+    const r = await fetch('/chats');
+    const j = await r.json();
+    const sel = document.getElementById('chatSelector');
+    sel.innerHTML = '';
+    (j.chats || []).forEach(c => {
+      const opt = document.createElement('option');
+      opt.value = c.id; opt.textContent = c.name;
+      sel.appendChild(opt);
+    });
+    if (j.chats && j.chats.length) {
+      activeChatId = j.chats[0].id;
+      sel.style.display = 'block';
+    }
+  } catch(e) { console.warn('loadChats failed', e); }
+}
+
+function toggleStream() {
+  streamEnabled = !streamEnabled;
+  const btn = document.getElementById('streamToggle');
+  const boxes = document.getElementById('agentCheckboxes');
+  const sel = document.getElementById('chatSelector');
+  btn.classList.toggle('active', streamEnabled);
+  boxes.style.display = streamEnabled ? 'flex' : 'none';
+  if (streamEnabled && !sel.options.length) loadChats();
+}
+
+async function streamChunk(text, timestamp) {
+  if (!streamEnabled || !activeChatId || !text.trim()) return;
+  try {
+    await fetch('/meeting/stream-chunk', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({text, timestamp, chat_id: activeChatId})
+    });
+    const st = document.getElementById('streamStatus');
+    st.style.display = 'inline';
+    setTimeout(() => { st.style.display = 'none'; }, 2000);
+  } catch(e) { console.warn('streamChunk failed', e); }
+}
+
+async function autosaveChunk(text, timestamp) {
+  if (!meetSessionId || !text.trim()) return;
+  const name = document.getElementById('meetingName').value || 'untitled';
+  try {
+    await fetch('/meeting/autosave', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({session_id: meetSessionId, meeting_name: name, chunk_text: text, timestamp})
+    });
+  } catch(e) { console.warn('autosave failed', e); }
+}
+
+async function checkAutosaves() {
+  try {
+    const r = await fetch('/meeting/autosaves');
+    const j = await r.json();
+    if (!j.autosaves || !j.autosaves.length) return;
+    const banner = document.getElementById('recoveryBanner');
+    const latest = j.autosaves[0];
+    const d = new Date(latest.modified * 1000);
+    banner.innerHTML = `⚠️ Unsaved meeting found: <strong>${latest.filename.replace(/^[^_]+_/, '').replace('.md','')}</strong> — ${d.toLocaleString()} <button onclick="recoverMeeting('${latest.filename}')">Recover</button><button onclick="discardAutosave('${latest.filename}')">Discard</button>`;
+    banner.style.display = 'block';
+  } catch(e) {}
+}
+
+async function recoverMeeting(filename) {
+  const r = await fetch('/meeting/autosave/recover', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({filename})});
+  const j = await r.json();
+  if (j.status === 'recovered') {
+    document.getElementById('recoveryBanner').style.display = 'none';
+    alert('Meeting recovered: ' + j.filename);
+    loadMeetings();
+  }
+}
+
+async function discardAutosave(filename) {
+  if (!confirm('Discard unsaved meeting?')) return;
+  await fetch(`/meeting/autosave/${filename}`, {method:'DELETE'});
+  document.getElementById('recoveryBanner').style.display = 'none';
+}
+
 // --- Saved meetings ---
+async function loadMeetings(){ return loadSavedMeetings(); }
 async function loadSavedMeetings(){
   const list = document.getElementById('meetingsList');
   list.innerHTML = '<span style="color:var(--muted);font-size:13px">Loading…</span>';
@@ -487,6 +617,7 @@ document.getElementById('closeMeetingViewer').addEventListener('click', ()=>{
 
 // On load
 fetchHealth();
+checkAutosaves();
 </script>
 </body>
 </html>
