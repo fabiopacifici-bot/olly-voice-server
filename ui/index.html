@@ -468,15 +468,22 @@ saveBtn.addEventListener('click', async ()=>{
   const name = document.getElementById('meetingName').value || '';
   const duration = meetTimer.textContent;
   const transcript = meetTranscriptLines.join('\n');
+  // Collect selected agents
+  const agents = [];
+  if (document.getElementById('agentLaywy')?.checked) agents.push('lawy');
+  if (document.getElementById('agentMarty')?.checked) agents.push('marty');
+  if (document.getElementById('agentOlly')?.checked) agents.push('olly');
+  if (document.getElementById('agentSage')?.checked) agents.push('sage');
   try{
-    const r = await fetch('/meeting/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,duration,transcript})});
+    const r = await fetch('/meeting/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,duration,transcript,agents:agents.length?agents:['lawy','marty','olly']})});
     const j = await r.json();
-    meetStatus.textContent = 'Saved: '+j.filename;
+    meetStatus.textContent = 'Saved ✓ — reconciling memories…';
     // Clean up autosave after successful save
     if (meetSessionId) {
       const safe = name.replace(/[^a-zA-Z0-9\-_ ]/g, '_').trim().substring(0, 40);
       fetch(`/meeting/autosave/${meetSessionId}_${safe}.md`, {method:'DELETE'}).catch(()=>{});
     }
+    setTimeout(()=>{ meetStatus.textContent = 'Saved: '+j.filename; }, 3000);
   }catch(e){ meetStatus.textContent = 'Save failed: '+e.message; }
 });
 
