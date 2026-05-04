@@ -152,10 +152,9 @@ async def startup_event():
             await c.get(LLM_URL)
     except Exception:
         print(f"WARNING: LLM server at {LLM_URL} is unreachable. /chat will return 502 until it's available. Set LLM_URL env var to override.")
-    # load models in background threads so handlers don't block
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, load_whisper)
-    await loop.run_in_executor(None, load_cosy)
+    # Models are loaded lazily on first request — not at startup
+    # Whisper loads on first /transcribe, CosyVoice on first /tts
+    print("[olly-voice] Ready. Whisper and TTS will load on first use.")
 
 @app.get('/health')
 async def health():
