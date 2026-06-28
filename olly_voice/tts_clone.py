@@ -9,6 +9,42 @@ import asyncio
 
 router = APIRouter()
 
+# Voice samples directory — overridable via VOICE_SAMPLES_DIR env var.
+# Defaults to <repo>/media/voice-samples/ so a fresh install works out of the box.
+_BASE = Path(__file__).resolve().parent.parent
+VOICE_SAMPLES_DIR = Path(os.environ.get('VOICE_SAMPLES_DIR', str(_BASE / 'media' / 'voice-samples')))
+VOICE_SAMPLES_DIR.mkdir(parents=True, exist_ok=True)
+
+
+@router.get('/tts/voices')
+async def list_voices():
+    """Return the list of available WAV voice samples that can be used for cloning."""
+    samples = sorted(p.name for p in VOICE_SAMPLES_DIR.glob('*.wav'))
+    return JSONResponse({'voices': samples})
+
+
+@router.post('/tts/clone/voices')
+async def upload_voice(file: UploadFile = File(...)):
+    """Upload a WAV voice sample to the voice-samples directory."""
+    filename = Path(file.filename or '').name
+    if not filename:
+        return JSONResponse({'error': 'filename is required'}, status_code=400)
+    if Path(filename).suffix.lower() != '.wav':
+        return JSONResponse({'error': 'only .wav files are accepted'}, status_code=415)
+    # Prevent path traversal
+    dest = VOICE_SAMPLES_DIR / filename
+    if dest.parent.resolve() != VOICE_SAMPLES_DIR.resolve():
+        return JSONResponse({'error': 'invalid filename'}, status_code=400)
+
+    content = await file.read()
+    if not content:
+        return JSONResponse({'error': 'uploaded file is empty'}, status_code=400)
+
+    with open(dest, 'wb') as f:
+        f.write(content)
+
+    return JSONResponse({'status': 'uploaded', 'voice': filename}, status_code=201)
+
 # lazy import of provider
 _provider = None
 _provider_load_attempted = False

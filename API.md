@@ -79,6 +79,49 @@ curl -X POST http://127.0.0.1:8766/tts/clone \
 
 ---
 
+### `GET /tts/voices`
+
+List available WAV voice samples that can be used as a reference for cloning.
+
+**Response:**
+```json
+{ "voices": ["fabio-en-phonetic.wav", "fabio-ita-phonetic.wav", "ricky-voice-eng.wav"] }
+```
+
+The directory can be overridden with the `VOICE_SAMPLES_DIR` environment variable (default: `<repo>/media/voice-samples/`).
+
+---
+
+### `POST /tts/clone/voices`
+
+Upload a new WAV voice sample to the server's voice-samples directory. Only `.wav` files are accepted.
+
+**Content-Type:** `multipart/form-data`
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `file` | file (WAV) | ✅ | The `.wav` sample to upload |
+
+**Response (201):**
+```json
+{ "status": "uploaded", "voice": "my-voice.wav" }
+```
+
+**Error responses:**
+```json
+{ "error": "only .wav files are accepted" }   // 415 — wrong file type
+{ "error": "uploaded file is empty" }          // 400 — empty file
+{ "error": "filename is required" }            // 400 — missing filename
+```
+
+**Example:**
+```bash
+curl -X POST http://127.0.0.1:8766/tts/clone/voices \
+  -F "file=@/path/to/my-voice.wav"
+```
+
+---
+
 ### `POST /tts`
 
 Basic TTS without voice cloning. Uses the configured Piper/CosyVoice model.
