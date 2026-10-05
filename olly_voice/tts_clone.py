@@ -45,27 +45,46 @@ async def upload_voice(file: UploadFile = File(...)):
 
     return JSONResponse({'status': 'uploaded', 'voice': filename}, status_code=201)
 
-# lazy import of provider
-_provider = None
-_provider_load_attempted = False
+# lazy provider registry: engine name -> module
+_providers = {}
+_provider_attempted = set()
 
 
-def _ensure_provider():
-    global _provider, _provider_load_attempted
-    if _provider is not None:
-        return _provider
-    if _provider_load_attempted:
+def _ensure_provider(engine: str = "qwen"):
+    """Return the provider module for an engine ("qwen" | "pocket").
+
+    Caches imports. Returns None (and logs) if the engine failed to import.
+    """
+    global _providers, _provider_attempted
+    if engine in _providers:
+        return _providers[engine]
+    if engine in _provider_attempted:
         return None
-    _provider_load_attempted = True
+    _provider_attempted.add(engine)
     try:
-        # Use absolute import to work when running as an app module
-        from tts_providers.qwen import tts_qwen as provider
-        _provider = provider
-        return _provider
+        if engine == "pocket":
+            from tts_providers.pocket import tts_pocket as provider
+        else:
+            # Use absolute import to work when running as an app module
+            from tts_providers.qwen import tts_qwen as provider
+        _providers[engine] = provider
+        return provider
     except Exception as e:
-        print(f"Failed to import qwen provider: {e}")
-        _provider = None
+        print(f"Failed to import {engine} provider: {e}")
         return None
+
+
+def _split_engine_model(model: str):
+    """Parse "<engine>:<model>" -> (engine, model).
+
+    e.g. "pocket:italian_24l" -> ("pocket", "italian_24l"), "0.6" -> ("qwen", "0.6").
+    """
+    if not model:
+        return "qwen", model
+    if model.startswith("pocket"):
+        rest = model.split(":", 1)[1] if ":" in model else "english"
+        return "pocket", (rest or "english")
+    return "qwen", model
 
 
 @router.post('/tts/clone')
@@ -81,24 +100,31 @@ async def tts_clone(
 ):
     """Clone a voice from sample (optional) and synthesize text.
 
-    model: '0.6' or '1.7' or a model path/id. If '0.6' or '1.7', the server will map to configured env vars.
+    model: '0.6'/1.7' (qwen) or 'pocket[:<lang>]' (pocket engine), or a model path/id.
     sample: optional wav file (small) for cloning.
     ref_text: optional transcript of the sample to improve prosody. If not provided and a sample is present, the server will transcribe the sample locally.
     Returns WAV stream.
     """
-    prov = _ensure_provider()
+    engine, model_core = _split_engine_model(model)
+    prov = _ensure_provider(engine)
     if prov is None:
-        return JSONResponse({'error': 'qwen provider not available on this server'}, status_code=503)
+        return JSONResponse({'error': f'{engine} provider not available on this server'}, status_code=503)
 
-    # Map short names to env paths
-    base = Path(__file__).resolve().parent.parent
-    env_map = {
-        '0.6': os.environ.get('QWEN_TTS_0_6_MODEL', os.environ.get('QWEN_TTS_MODEL')),
-        '1.7': os.environ.get('QWEN_TTS_1_7_MODEL', os.environ.get('QWEN_TTS_MODEL')),
-    }
-    model_id = env_map.get(model, model)
-    if not model_id:
-        return JSONResponse({'error': 'model not configured on server'}, status_code=400)
+    if engine == "pocket":
+        # Pocket engine: model_core IS the language config (e.g. "italian_24l")
+        model_id = model_core
+        if not model_id:
+            return JSONResponse({'error': 'model not configured on server'}, status_code=400)
+    else:
+        # Map short names to env paths
+        base = Path(__file__).resolve().parent.parent
+        env_map = {
+            '0.6': os.environ.get('QWEN_TTS_0_6_MODEL', os.environ.get('QWEN_TTS_MODEL')),
+            '1.7': os.environ.get('QWEN_TTS_1_7_MODEL', os.environ.get('QWEN_TTS_MODEL')),
+        }
+        model_id = env_map.get(model_core, model_core)
+        if not model_id:
+            return JSONResponse({'error': 'model not configured on server'}, status_code=400)
 
     # Load model (may raise ImportError which we'll surface)
     try:

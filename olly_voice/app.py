@@ -307,6 +307,7 @@ async def chat(body: dict):
         return JSONResponse({'error': 'invalid body'}, status_code=400)
     user_text = body.get('text')
     session_id = body.get('session_id', 'default')
+    tts_engine = body.get('tts_engine') or 'qwen'
     system_prompt = body.get('system_prompt') or _DEFAULT_SYSTEM_PROMPT
     if not user_text:
         return JSONResponse({'error': 'missing text'}, status_code=400)
@@ -389,7 +390,29 @@ async def chat(body: dict):
     fd, path = tempfile.mkstemp(suffix='.wav', dir=tmpdir)
     os.close(fd)
     try:
-        if _tts_available and _cosy:
+        # Pocket TTS engine (native, in-process) when selected in the UI
+        if str(tts_engine or '').startswith('pocket'):
+            from tts_clone import _ensure_provider, _split_engine_model
+            _eng, _lang = _split_engine_model(tts_engine)
+            _prov = _ensure_provider('pocket')
+            if _prov is not None:
+                loop = asyncio.get_event_loop()
+                _mdl = await loop.run_in_executor(None, lambda: _prov.load_model(_lang or 'english'))
+                # prefer Fabio's cloned voice if a sample exists; else catalog
+                _sample = os.path.expanduser('~/.openclaw/media/voice-samples/fabio-en-phonetic.wav')
+                if _lang in ('italian', 'italian_24l'):
+                    _sample = os.path.expanduser('~/.openclaw/media/voice-samples/fabio-ita-phonetic.wav')
+                if _lang in ('french','german','spanish','portuguese','dutch'):
+                    _sample = None
+                if _sample and os.path.isfile(_sample):
+                    wav_bytes = await loop.run_in_executor(None, lambda: _prov.clone_voice(_mdl, _sample, reply, language=_lang))
+                else:
+                    wav_bytes = await loop.run_in_executor(None, lambda: _prov.synthesize_text(_mdl, reply, speaker='alba', language=_lang))
+                with open(path,'wb') as f:
+                    f.write(wav_bytes)
+            else:
+                make_silent_wav(path)
+        elif _tts_available and _cosy:
             loop = asyncio.get_event_loop()
             # Piper-only: use inference_sft without speaker override
             wav_bytes = await loop.run_in_executor(None, lambda: _cosy['inference_sft'](reply))

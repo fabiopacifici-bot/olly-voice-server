@@ -94,6 +94,15 @@ body{margin:0;font-family:Inter,system-ui,Segoe UI,Roboto,Arial;background:var(-
       <div class="controls">
         <button id="micBtn" title="Hold Space or click+hold">🎤</button>
         <div class="hint">Hold SPACE to talk</div>
+        <div class="engine-row" style="display:flex;align-items:center;gap:8px;margin-top:6px">
+          <label for="engineSelect" style="font-size:12px;color:var(--muted)">TTS engine:</label>
+          <select id="engineSelect" class="chat-selector" style="display:block;min-width:120px">
+            <option value="qwen" selected>Qwen (existing)</option>
+            <option value="pocket:english">Pocket TTS · EN</option>
+            <option value="pocket:italian">Pocket TTS · IT</option>
+            <option value="pocket:italian_24l">Pocket TTS · IT (24l)</option>
+          </select>
+        </div>
       </div>
     </div>
   </div>
@@ -263,8 +272,9 @@ async function stopRecording(auto=false){
       const jr = await r.json();
       addMessage('user', jr.text || '', null, false);
       setStatus('Thinking');
-      // call /chat with session_id
-      const cr = await fetch('/chat', {method:'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({text: jr.text||'', session_id: sessionId})});
+      // call /chat with session_id (+ selected TTS engine)
+      const engine = (document.getElementById('engineSelect')||{}).value || 'qwen';
+      const cr = await fetch('/chat', {method:'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({text: jr.text||'', session_id: sessionId, tts_engine: engine})});
       if(!cr.ok){ const txt = await cr.text(); throw new Error('Chat failed: '+txt); }
       const replyHeader = cr.headers.get('X-Assistant-Reply') || '';
       const thinkingHeader = cr.headers.get('X-Thinking') || '';
