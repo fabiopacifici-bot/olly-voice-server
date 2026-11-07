@@ -117,7 +117,7 @@ def load_cosy():
                 wf.setframerate(sr)
                 wf.writeframes(audio.tobytes())
             return buf.getvalue()
-        _cosy = {'inference_sft': inference_sft}
+        _cosy = {'inference_sft': inference_sft, 'engine': 'qwen3-tts'}
         _tts_available = True
         print(f"Qwen3-TTS loaded: {QWEN_TTS_MODEL}, speaker={QWEN_TTS_SPEAKER}")
         return _cosy
@@ -134,7 +134,7 @@ def load_cosy():
             with wave.open(buf, 'wb') as wf:
                 voice.synthesize_wav(text, wf)
             return buf.getvalue()
-        _cosy = {'inference_sft': inference_sft}
+        _cosy = {'inference_sft': inference_sft, 'engine': 'piper'}
         _tts_available = True
         print(f"Piper TTS loaded: {PIPER_MODEL}")
         return _cosy
@@ -144,6 +144,11 @@ def load_cosy():
         _tts_available = False
         return None
 
+async def warm_voice_models():
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, load_whisper)
+    await loop.run_in_executor(None, load_cosy)
+
 @app.on_event("startup")
 async def startup_event():
     # check LLM reachability (warn only)
@@ -152,9 +157,8 @@ async def startup_event():
             await c.get(LLM_URL)
     except Exception:
         print(f"WARNING: LLM server at {LLM_URL} is unreachable. /chat will return 502 until it's available. Set LLM_URL env var to override.")
-    # Models are loaded lazily on first request — not at startup
-    # Whisper loads on first /transcribe, CosyVoice on first /tts
-    print("[olly-voice] Ready. Whisper and TTS will load on first use.")
+    asyncio.create_task(warm_voice_models())
+    print("[olly-voice] Starting Whisper and TTS model initialization.")
 
 @app.get('/health')
 async def health():
@@ -162,12 +166,7 @@ async def health():
     # report whisper/tts availability based on already-loaded globals
     status['whisper'] = 'ok' if _whisper is not None else 'missing'
     if _tts_available and _cosy:
-        # detect which TTS is loaded
-        try:
-            from qwen_tts import Qwen3TTSModel
-            status['tts'] = 'qwen3-tts'
-        except ImportError:
-            status['tts'] = 'piper'
+        status['tts'] = _cosy['engine']
     else:
         status['tts'] = 'stub'
     # check LLM
@@ -214,11 +213,15 @@ async def delete_history(session_id: str):
 # /tts endpoint: accepts form text and returns wav stream
 @app.post('/tts')
 async def tts(text: str = Form(...)):
-    # Do not call load_cosy here; startup should have loaded models. If not loaded, attempt non-blocking check.
+    # Lazy-load the TTS engine on first use (Qwen3-TTS, Piper fallback).
+    # load_cosy() is guarded by _cosy_load_attempted, so repeats are no-ops.
     tmpdir = tempfile.gettempdir()
     fd, path = tempfile.mkstemp(suffix='.wav', dir=tmpdir)
     os.close(fd)
     try:
+        if not (_tts_available and _cosy):
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, load_cosy)
         if _tts_available and _cosy:
             loop = asyncio.get_event_loop()
             # Piper-only: use inference_sft without speaker override
@@ -412,20 +415,26 @@ async def chat(body: dict):
                     f.write(wav_bytes)
             else:
                 make_silent_wav(path)
-        elif _tts_available and _cosy:
-            loop = asyncio.get_event_loop()
-            # Piper-only: use inference_sft without speaker override
-            wav_bytes = await loop.run_in_executor(None, lambda: _cosy['inference_sft'](reply))
-            if isinstance(wav_bytes, bytes):
-                with open(path,'wb') as f:
-                    f.write(wav_bytes)
-            elif isinstance(wav_bytes, str) and os.path.exists(wav_bytes):
-                with open(wav_bytes,'rb') as src, open(path,'wb') as dst:
-                    dst.write(src.read())
+        else:
+            # Lazy-load the TTS engine on first use (Qwen3-TTS, then Piper fallback).
+            # load_cosy() is guarded by _cosy_load_attempted, so repeats are no-ops.
+            if not (_tts_available and _cosy):
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, load_cosy)
+            if _tts_available and _cosy:
+                loop = asyncio.get_event_loop()
+                # Piper-only: use inference_sft without speaker override
+                wav_bytes = await loop.run_in_executor(None, lambda: _cosy['inference_sft'](reply))
+                if isinstance(wav_bytes, bytes):
+                    with open(path,'wb') as f:
+                        f.write(wav_bytes)
+                elif isinstance(wav_bytes, str) and os.path.exists(wav_bytes):
+                    with open(wav_bytes,'rb') as src, open(path,'wb') as dst:
+                        dst.write(src.read())
+                else:
+                    make_silent_wav(path)
             else:
                 make_silent_wav(path)
-        else:
-            make_silent_wav(path)
         print(f"[TIMING] TTS/WAV: {(_time.time()-_t1)*1000:.0f}ms")
         def iterfile(p):
             with open(p,'rb') as fh:
